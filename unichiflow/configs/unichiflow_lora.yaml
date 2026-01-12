@@ -1,0 +1,63 @@
+# UniChiFlow LoRA fine-tuning config for Real D-Peptides
+
+train:
+  seed: 2024
+  device: cuda
+  num_workers: 8
+  batch_size: 32
+  max_iters: 2000
+  save_freq: 200
+  logdir: /root/autodl-fs/UniChiflow/outputs_lora
+  max_grad_norm: 10.0
+  optimizer:
+    lr: 2e-4  # Slightly lower LR for fine-tuning
+    weight_decay: 0.0
+
+data:
+  structure_dir: /root/autodl-tmp/d_pep_data
+  cache_dir: /root/autodl-fs/UniChiflow/pep_cache_lora
+  split: train
+  reset_cache: false
+  twin_universe_prob: 0.0   # Real D-peptides, no mirroring needed
+
+model:
+  d_model: 256
+  n_layers: 6
+  n_heads: 8
+  dropout: 0.1
+  max_len: 512
+  aatype_vocab: 21
+
+flow:
+  sigma_trans: 1.0
+  num_steps: 30
+  angle_purify: true
+  use_ot: true
+
+esm:
+  enable: false
+  model: esm2_t12_35M_UR50D
+  repr_layer: -1
+  requires_grad: false
+  use_adapter: true
+  rank: 8
+  alpha: 8.0
+  dropout: 0.0
+
+# Parameter-efficient adapter
+chi_lora:
+  enable: true
+  rank: 8
+  alpha: 16.0
+  dropout: 0.05
+  targets: [ffn]
+  freeze_backbone: true  # Freeze backbone to train only LoRA adapters
+
+sample:
+  ckpt_path: ""
+  device: cuda
+  num_samples: 2
+  num_steps: 30
+  output_dir: /root/autodl-fs/UniChiflow/unichiflow_lora_output
+  chirality_token: 1
+  use_hard_decoder: true

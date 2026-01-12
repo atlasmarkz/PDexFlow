@@ -1,0 +1,23 @@
+# Core runtime dependencies for UniChiflow scaffold (ChiLoRA excluded)
+
+# Deep learning
+torch
+
+# Config
+hydra-core
+omegaconf
+
+# Data / IO
+biopython
+lmdb
+joblib
+
+# Utilities
+tqdm
+easydict
+numpy
+
+# Optional (not used in current scaffold):
+esm
+scipy
+pandas

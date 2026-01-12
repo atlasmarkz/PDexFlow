@@ -1,0 +1,73 @@
+# UniChiFlow core config (ChiLoRA excluded)
+
+train:
+  seed: 2024
+  device: cuda
+  num_workers: 8
+  batch_size: 128
+  max_iters: 10000
+  save_freq: 500
+  logdir: /root/autodl-fs/UniChiflow/outputs
+  max_grad_norm: 3
+  max_grad_value: 5.0   # clip individual grad values to avoid explosions
+  grad_accum_steps: 2
+  use_amp: false
+  optimizer:
+    lr: 1e-5
+    weight_decay: 0.0
+
+data:
+  structure_dir: /root/autodl-tmp/pepmerge
+  cache_dir: /root/autodl-fs/UniChiflow/pep_cache
+  split: train   # train|test|all
+  reset_cache: false
+  twin_universe_prob: 0.5   # probability to mirror a sample (x->-x) as synthetic D (used when deterministic_pairs=false)
+  deterministic_pairs: true # use full L set and full mirrored D set deterministically
+
+model:
+  d_model: 256
+  n_layers: 6
+  n_heads: 8
+  dropout: 0.1
+  max_len: 512
+  aatype_vocab: 21  # 20 aa + mask
+  angle_dim: 5
+
+flow:
+  sigma_trans: 1.0
+  cfm_weight: 1.0
+  sym_weight: 1.0
+  seq_weight: 0.1
+  num_steps: 30
+  angle_purify: true
+  use_ot: false  # enable minibatch OT alignment during training
+
+# Optional frozen ESM conditioner
+esm:
+  enable: true
+  model: esm2_t12_35M_UR50D
+  repr_layer: -1
+  requires_grad: false
+  use_adapter: true   # set false to remove Chiral-Bridge adapter (plain frozen ESM projection)
+  rank: 8
+  alpha: 8.0
+  dropout: 0.0
+
+# Parameter-efficient adapter (optional)
+chi_lora:
+  enable: true
+  rank: 8
+  alpha: 16.0
+  dropout: 0.05
+  targets: [attn_out, ffn]  # attn_out|ffn
+  freeze_backbone: true
+
+sample:
+  ckpt_path: "/root/autodl-fs/UniChiflow/outputs/2026_01_07__19_24_41/checkpoints/best_model.pt"
+  lora_ckpt_path: "/root/autodl-fs/UniChiflow/outputs_lora/2026_01_10__17_27_46/checkpoints/best_model.pt"  # Path to LoRA checkpoint
+  device: cuda
+  num_samples: 5
+  num_steps: 200
+  output_dir: /root/autodl-fs/UniChiflow/unichiflow_output
+  chirality_token: 1   # 0=L, 1=D
+  use_hard_decoder: true  # set false to ablate hard constraints

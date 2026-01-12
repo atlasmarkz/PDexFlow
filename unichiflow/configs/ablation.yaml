@@ -1,0 +1,21 @@
+# Ablation presets for Hydra overrides (import with +ablation=<name> or copy blocks).
+
+w_o_Lsym:
+  flow:
+    sym_weight: 0.0
+
+w_o_Chiral_Bridge:
+  chi_lora:
+    enable: false
+  esm:
+    enable: true
+    use_adapter: false  # use plain frozen ESM projection, no chiral bridge
+    requires_grad: false
+
+w_o_Hard_Const:
+  sample:
+    use_hard_decoder: false
+
+w_o_ROT:
+  flow:
+    use_ot: false
