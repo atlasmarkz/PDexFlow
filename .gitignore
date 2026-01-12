@@ -1,0 +1,47 @@
+# Ignore outputs and large caches
+outputs/
+outputs_lora/
+unichiflow_output/
+pep_cache/
+pep_cache_lora/
+pep_cache_dreal/
+*.lmdb
+*-cache.lmdb*
+
+# Checkpoints and model weights
+ckpt/
+checkpoints/
+*.pt
+*.pth
+
+# Packaging and build
+*.egg-info/
+dist/
+build/
+*.whl
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtualenvs and environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE/editor
+.vscode/
+.idea/
+
+# Jupyter
+.ipynb_checkpoints
+
+# Logs
+logs/
+*.log
+
+# Misc
+.pytest_cache/
+.cache/
