@@ -15,9 +15,10 @@ from unichiflow.data.pep_dataloader import PaddingCollate
 from unichiflow.data.real_d_pep_dataset import RealDPepDataset
 from unichiflow.data import utils as du
 from unichiflow.models.chiralformer import UniChiFlowModel
+from unichiflow.checkpoint import load_backbone_into_lora
 
 config_path = os.path.join(os.path.dirname(__file__), "..", "configs")
-config_name = "unichiflow_pepmerge.yaml"
+config_name = "unichiflow_lora.yaml"
 
 def _inf_iterator(loader):
     while True:
@@ -68,10 +69,10 @@ def main(cfg: DictConfig):
     if cfg.sample.ckpt_path:
         print(f"Loading pre-trained backbone from {cfg.sample.ckpt_path}...")
         ckpt = torch.load(str(cfg.sample.ckpt_path), map_location=device, weights_only=False)
-        # strict=False because the checkpoint might not have LoRA weights (since we trained from scratch without them)
-        # or might have optimizer states we don't need.
-        missing_keys, unexpected_keys = model.load_state_dict(ckpt['model'], strict=False)
-        print(f"Loaded backbone. Missing keys (expected for LoRA): {len(missing_keys)}, Unexpected keys: {len(unexpected_keys)}")
+        
+        # Use intelligent loader that handles LoRA key mismatches
+        # This handles mapping 'weight' -> 'base.weight' if the model has LoRA layers
+        model = load_backbone_into_lora(model, ckpt['model'])
     else:
         print("WARNING: No checkpoint path provided. Training from scratch (random initialization)!")
 
@@ -88,6 +89,17 @@ def main(cfg: DictConfig):
     print(f"Number of trainable parameters: {sum(p.numel() for p in trainable_params)}")
 
     optim = torch.optim.AdamW(trainable_params, lr=float(cfg.train.optimizer.lr), weight_decay=float(cfg.train.optimizer.weight_decay))
+    
+    max_grad_value = float(cfg.train.get("max_grad_value", 5.0))
+
+    def _sanitize_gradients(parameters):
+        """Replace NaN/Inf grads and optionally clip by value before norm clipping."""
+        for p in parameters:
+            if p.grad is None:
+                continue
+            torch.nan_to_num_(p.grad, nan=0.0, posinf=0.0, neginf=0.0)
+            if max_grad_value > 0:
+                p.grad.clamp_(min=-max_grad_value, max=max_grad_value)
 
     model.train()
     pbar = tqdm(range(1, int(cfg.train.max_iters) + 1))
@@ -97,12 +109,31 @@ def main(cfg: DictConfig):
     for step in pbar:
         try:
             batch = du.recursive_to(next(it), device)
+            
+            # Normalize coordinates to improve numerical stability
+            if 'pos_heavyatom' in batch:
+                batch['pos_heavyatom'] = batch['pos_heavyatom'] * 0.1
+
             loss_dict = model(batch)
             loss = loss_dict['loss']
 
+            # Skip step if any loss component is non-finite
+            if not torch.isfinite(loss):
+                print(f"Non-finite loss at step {step}: {loss_dict}")
+                optim.zero_grad(set_to_none=True)
+                continue
+            
             optim.zero_grad(set_to_none=True)
             loss.backward()
-            grad = clip_grad_norm_(model.parameters(), float(cfg.train.max_grad_norm))
+            
+            _sanitize_gradients(trainable_params)
+            grad = clip_grad_norm_(trainable_params, float(cfg.train.max_grad_norm))
+            
+            if not torch.isfinite(grad):
+                print(f"Non-finite gradient at step {step}: {grad}")
+                optim.zero_grad(set_to_none=True)
+                continue
+                
             optim.step()
 
             # Update smoothed loss for logging

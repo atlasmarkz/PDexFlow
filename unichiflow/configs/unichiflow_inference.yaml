@@ -1,0 +1,67 @@
+# UniChiFlow Inference Config
+
+# Basic settings
+train:
+  seed: 2024
+  device: cuda
+
+# Data config (for dataset init if needed)
+data:
+  structure_dir: /root/autodl-tmp/pepmerge 
+  cache_dir: /root/autodl-fs/UniChiflow/pep_cache
+  reset_cache: false
+  split: test 
+  twin_universe_prob: 0.0
+
+# Model Architecture (Must match the trained checkpoint)
+model:
+  d_model: 256
+  n_layers: 6
+  n_heads: 8
+  dropout: 0.0 # Shutdown dropout for inference
+  max_len: 512
+  aatype_vocab: 21
+  angle_dim: 5
+
+# Flow settings (Used in model init)
+flow:
+  sigma_trans: 0.5 
+  angle_purify: true
+  use_ot: true 
+  auto_loss_weighting: true # Match training config
+
+# ESM Conditioner (Must match trained checkpoint)
+esm:
+  enable: true
+  model: esm2_t12_35M_UR50D
+  repr_layer: -1
+  requires_grad: false
+  use_adapter: true
+  rank: 8
+  alpha: 8.0
+  dropout: 0.0
+
+# LoRA Adapter (Enable if using a LoRA checkpoint or backbone trained with LoRA)
+chi_lora:
+  enable: true  
+  rank: 8
+  alpha: 16.0
+  dropout: 0.0
+  targets: [attn_out, ffn]
+  freeze_backbone: true 
+
+# Sampling / Inference specific settings
+sample:
+  # Path to backbone checkpoint (required)
+  # Replace with actual path
+  ckpt_path: "/root/autodl-fs/UniChiflow/outputs/2026_01_13__16_49_05/checkpoints/best_model.pt"
+  
+  # Path to LoRA checkpoint (optional, if separate from backbone)
+  lora_ckpt_path: "/root/autodl-fs/UniChiflow/outputs_lora/2026_01_14__13_57_07/checkpoints/best_model.pt"
+  
+  device: cuda
+  num_samples: 5
+  num_steps: 50 
+  output_dir: /root/autodl-fs/UniChiflow/inference_output
+  chirality_token: 1 # 0=L, 1=D
+  use_hard_decoder: true 

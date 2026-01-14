@@ -3,17 +3,17 @@
 train:
   seed: 2024
   device: cuda
-  num_workers: 8
-  batch_size: 128
+  num_workers: 12
+  batch_size: 384
   max_iters: 10000
-  save_freq: 500
+  save_freq: 1000
   logdir: /root/autodl-fs/UniChiflow/outputs
   max_grad_norm: 3
   max_grad_value: 5.0   # clip individual grad values to avoid explosions
   grad_accum_steps: 2
   use_amp: false
   optimizer:
-    lr: 1e-5
+    lr: 5e-4
     weight_decay: 0.0
 
 data:
@@ -34,13 +34,24 @@ model:
   angle_dim: 5
 
 flow:
-  sigma_trans: 1.0
-  cfm_weight: 1.0
-  sym_weight: 1.0
-  seq_weight: 0.1
+  sigma_min: 0.0001
+  sigma_trans: 0.5
+  cfm_weight: 1     # Increased to give flow more signal
+  sym_weight: 1     # Reduced to balance with cfm (prev 1.0 vs 0.001 was unbalanced)
+  seq_weight: 1
+  # per-component cfm weights (trans, rot, ang)
+  cfm_w_trans: 1.0
+  cfm_w_rot: 1.0
+  cfm_w_ang: 1.0
   num_steps: 30
   angle_purify: true
-  use_ot: false  # enable minibatch OT alignment during training
+  use_ot: true # enable minibatch OT alignment during training
+  auto_loss_weighting: true # use learnable log_vars to weight multiple loss terms
+
+  # Symmetry loss warmup schedule (steps)
+  sym_warmup_enable: false
+  sym_warmup_start: 500
+  sym_warmup_end: 2000
 
 # Optional frozen ESM conditioner
 esm:
@@ -55,19 +66,9 @@ esm:
 
 # Parameter-efficient adapter (optional)
 chi_lora:
-  enable: true
+  enable: false
   rank: 8
   alpha: 16.0
   dropout: 0.05
-  targets: [attn_out, ffn]  # attn_out|ffn
+  targets: [attn_out, ffn]
   freeze_backbone: true
-
-sample:
-  ckpt_path: "/root/autodl-fs/UniChiflow/outputs/2026_01_07__19_24_41/checkpoints/best_model.pt"
-  lora_ckpt_path: "/root/autodl-fs/UniChiflow/outputs_lora/2026_01_10__17_27_46/checkpoints/best_model.pt"  # Path to LoRA checkpoint
-  device: cuda
-  num_samples: 5
-  num_steps: 200
-  output_dir: /root/autodl-fs/UniChiflow/unichiflow_output
-  chirality_token: 1   # 0=L, 1=D
-  use_hard_decoder: true  # set false to ablate hard constraints

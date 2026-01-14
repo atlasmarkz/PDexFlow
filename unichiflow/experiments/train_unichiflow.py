@@ -16,7 +16,7 @@ from unichiflow.models.chiralformer import UniChiFlowModel
 
 
 config_path = os.path.join(os.path.dirname(__file__), "..", "configs")
-config_name = "unichiflow_pepmerge.yaml"
+config_name = "unichiflow_backbone.yaml"
 
 
 def _inf_iterator(loader):
@@ -151,12 +151,16 @@ def main(cfg: DictConfig):
         return optim.param_groups[0]['lr']
 
     target_sym_weight = float(cfg.flow.get("sym_weight", 1.0))
-    warmup_steps = 2000
+    # Configurable warmup
+    warmup_enable = bool(cfg.flow.get("sym_warmup_enable", True))
+    warmup_start = int(cfg.flow.get("sym_warmup_start", 500))
+    warmup_end = int(cfg.flow.get("sym_warmup_end", 2000))
 
     def get_sym_weight(s):
-        if s < 500: return 0.0
-        if s >= warmup_steps: return target_sym_weight
-        return target_sym_weight * (s - 500) / (warmup_steps - 500)
+        if not warmup_enable: return target_sym_weight
+        if s < warmup_start: return 0.0
+        if s >= warmup_end: return target_sym_weight
+        return target_sym_weight * (s - warmup_start) / (warmup_end - warmup_start)
 
     for step in pbar:
         batch = du.recursive_to(next(it), device)
@@ -233,7 +237,11 @@ def main(cfg: DictConfig):
             smooth_loss = smooth_alpha * smooth_loss + (1 - smooth_alpha) * raw_loss
 
         pbar.set_description(
-            f"loss {raw_loss:.4f} (sm: {smooth_loss:.4f}) | cfm {loss_dict['cfm_loss'].item():.3f} | sym {loss_dict['sym_loss'].item():.3f} | seq {loss_dict['seq_loss'].item():.3f} | g {grad:.1f}"
+            f"loss {raw_loss:.4f} (sm: {smooth_loss:.4f}) | "
+            f"cfm {loss_dict['cfm_loss'].item():.3f}*{loss_dict.get('w_cfm', torch.tensor(0.0)).item():.1e} | "
+            f"sym {loss_dict['sym_loss'].item():.3f}*{loss_dict.get('w_sym', torch.tensor(0.0)).item():.1e} | "
+            f"seq {loss_dict['seq_loss'].item():.3f}*{loss_dict.get('w_seq', torch.tensor(0.0)).item():.1e} | "
+            f"g {grad:.1f}"
         )
 
         writer.add_scalar('train/loss', raw_loss, global_step)

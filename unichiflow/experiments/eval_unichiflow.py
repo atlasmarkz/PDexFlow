@@ -13,6 +13,7 @@ from unichiflow.data.pep_constants import BBHeavyAtom
 from unichiflow.data.writers import save_pdb
 from unichiflow.metrics import aar_accuracy, chirality_error, kabsch_rmsd
 from unichiflow.models.chiralformer import UniChiFlowModel
+from unichiflow.checkpoint import load_backbone_into_lora
 
 
 config_path = os.path.join(os.path.dirname(__file__), "..", "configs")
@@ -69,7 +70,15 @@ def main(cfg: DictConfig):
     sam = cfg.sample
     if sam.ckpt_path:
         ckpt = torch.load(str(sam.ckpt_path), map_location=device)
-        model.load_state_dict(ckpt["model"], strict=True)
+        if cfg.get("chi_lora", {}).get("enable", False):
+            print("Using load_backbone_into_lora for mapping...")
+            model = load_backbone_into_lora(model, ckpt["model"])
+        else:
+            try:
+                model.load_state_dict(ckpt["model"], strict=True)
+            except RuntimeError as e:
+                print(f"Strict loading failed: {e}. Retrying with strict=False")
+                model.load_state_dict(ckpt["model"], strict=False)
 
     model.eval()
 

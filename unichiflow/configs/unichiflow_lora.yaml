@@ -4,11 +4,11 @@ train:
   seed: 2024
   device: cuda
   num_workers: 8
-  batch_size: 32
+  batch_size: 16
   max_iters: 2000
   save_freq: 200
   logdir: /root/autodl-fs/UniChiflow/outputs_lora
-  max_grad_norm: 10.0
+  max_grad_norm: 1.0
   optimizer:
     lr: 2e-4  # Slightly lower LR for fine-tuning
     weight_decay: 0.0
@@ -33,9 +33,10 @@ flow:
   num_steps: 30
   angle_purify: true
   use_ot: true
+  auto_loss_weighting: true # Enable receiving learned loss weights from Stage 1
 
 esm:
-  enable: false
+  enable: true # Should match backbone training setting to ensure architectural compatibility
   model: esm2_t12_35M_UR50D
   repr_layer: -1
   requires_grad: false
@@ -50,14 +51,10 @@ chi_lora:
   rank: 8
   alpha: 16.0
   dropout: 0.05
-  targets: [ffn]
+  targets: [attn_out, ffn] # Matching backbone training config for consistency
   freeze_backbone: true  # Freeze backbone to train only LoRA adapters
 
 sample:
-  ckpt_path: ""
+  ckpt_path: "/root/autodl-fs/UniChiflow/outputs/2026_01_13__16_49_05/checkpoints/best_model.pt" # MUST BE SET to the result of Stage 1 (pepmerge) training
   device: cuda
-  num_samples: 2
-  num_steps: 30
-  output_dir: /root/autodl-fs/UniChiflow/unichiflow_lora_output
-  chirality_token: 1
-  use_hard_decoder: true
+

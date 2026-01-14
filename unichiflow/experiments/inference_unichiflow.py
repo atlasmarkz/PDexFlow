@@ -11,11 +11,12 @@ from unichiflow.data import utils as du
 from unichiflow.data.writers import save_pdb
 from unichiflow.data.pep_constants import BBHeavyAtom
 from unichiflow.models.chiralformer import UniChiFlowModel
+from unichiflow.checkpoint import load_backbone_into_lora
  
 
 
 config_path = os.path.join(os.path.dirname(__file__), "..", "configs")
-config_name = "unichiflow_pepmerge.yaml"
+config_name = "unichiflow_inference.yaml"
 
 
 @hydra.main(version_base=None, config_path=config_path, config_name=config_name)
@@ -72,42 +73,12 @@ def main(cfg: DictConfig):
         # If LoRA is enabled, we need to adapt the backbone state dict
         # because the LoRA wrapper changes parameter names (e.g. 'linear.weight' -> 'linear.base.weight')
         if cfg.get("chi_lora", {}).get("enable", False):
-            print("Adapting backbone weights for LoRA model structure...")
-            new_state_dict = {}
-            for k, v in state_dict.items():
-                # Check if this key corresponds to a module targeted by LoRA
-                # Standard targets are ["attn_out", "ffn"] which correspond to:
-                # - self_attn.out_proj
-                # - linear1, linear2
-                # We check if the key belongs to these modules and if it is a weight/bias
-                
-                # Heuristic: if the key ends in weight/bias and the model expects .base.weight/bias
-                # However, simpler is to try to match based on the error message pattern.
-                # 'trunk.layers.0.linear1.weight' -> 'trunk.layers.0.linear1.base.weight'
-                
-                # We can iterate over model named parameters to find the correct mapping, 
-                # or just use string replacement for known LoRA targets.
-                # Targets defined in config or default: attn_out, ffn
-                
-                is_lora_target = False
-                # Checking common patterns for the LoRA targets 'attn_out' and 'ffn'
-                if ".self_attn.out_proj." in k or ".linear1." in k or ".linear2." in k:
-                    if k.endswith(".weight"):
-                        k_new = k.replace(".weight", ".base.weight")
-                        new_state_dict[k_new] = v
-                        is_lora_target = True
-                    elif k.endswith(".bias"):
-                        k_new = k.replace(".bias", ".base.bias")
-                        new_state_dict[k_new] = v
-                        is_lora_target = True
-                
-                if not is_lora_target:
-                    new_state_dict[k] = v
-            state_dict = new_state_dict
-
-        # Use strict=False to allow flexibility (e.g. loading backbone into LoRA model)
-        msg = model.load_state_dict(state_dict, strict=False)
-        print(f"Load status: {msg}")
+            print("Adapting backbone weights for LoRA model structure (using intelligent loader)...")
+            model = load_backbone_into_lora(model, state_dict)
+        else:
+            # Use strict=False to allow flexibility
+            msg = model.load_state_dict(state_dict, strict=False)
+            print(f"Load status: {msg}")
 
     # Support loading separate LoRA weights if provided
     if sam.get("lora_ckpt_path") and cfg.get("chi_lora", {}).get("enable", False):

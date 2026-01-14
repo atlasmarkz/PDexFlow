@@ -40,6 +40,12 @@ class FlowConfig:
     sym_weight: float = 1.0
     seq_weight: float = 1.0
     use_ot: bool = True
+    # per-component weights for velocity flow-matching (trans, rot, ang)
+    cfm_w_trans: float = 1.0
+    cfm_w_rot: float = 1.0
+    cfm_w_ang: float = 1.0
+    # Automatic loss weighting
+    auto_loss_weighting: bool = False
 
 
 @dataclass
@@ -141,7 +147,8 @@ class UniChiFlowModel(nn.Module):
 
     def __init__(self, d_model: int = 256, n_layers: int = 6, n_heads: int = 8, dropout: float = 0.1, max_len: int = 512, aatype_vocab: int = 21,
                  sigma_trans: float = 1.0, chi_lora: Optional[Dict] = None, esm: Optional[Dict] = None, cfm_weight: float = 1.0, sym_weight: float = 1.0,
-                 seq_weight: float = 1.0, angle_dim: int = 5, use_ot: bool = True):
+                 seq_weight: float = 1.0, angle_dim: int = 5, use_ot: bool = True,
+                 cfm_w_trans: float = 1.0, cfm_w_rot: float = 1.0, cfm_w_ang: float = 1.0):
         super().__init__()
         self.d_model = int(d_model)
         self.max_len = int(max_len)
@@ -152,6 +159,9 @@ class UniChiFlowModel(nn.Module):
             sym_weight=float(sym_weight),
             seq_weight=float(seq_weight),
             use_ot=bool(use_ot),
+            cfm_w_trans=float(cfm_w_trans),
+            cfm_w_rot=float(cfm_w_rot),
+            cfm_w_ang=float(cfm_w_ang),
         )
         self.chi_lora_cfg = ChiLoRAConfig.from_cfg(chi_lora)
 
@@ -203,6 +213,13 @@ class UniChiFlowModel(nn.Module):
         self.out_rot6d = nn.Sequential(nn.LayerNorm(self.d_model), nn.Linear(self.d_model, 6, bias=False))
         self.out_angles = nn.Sequential(nn.LayerNorm(self.d_model), nn.Linear(self.d_model, self.angle_dim))
         self.out_seq = nn.Sequential(nn.LayerNorm(self.d_model), nn.Linear(self.d_model, self.aatype_vocab))
+
+        # Learnable loss weights (log variances) for Uncertainty Weighting
+        # log_vars[0]: cfm, log_vars[1]: sym, log_vars[2]: seq
+        if self.flow_cfg.auto_loss_weighting:
+            self.loss_log_vars = nn.Parameter(torch.zeros(3))
+        else:
+            self.loss_log_vars = None
 
     def _apply_chi_lora(self):
         targets: Set[str] = set(self.chi_lora_cfg.targets)
@@ -261,7 +278,8 @@ class UniChiFlowModel(nn.Module):
         device = aa_1.device
 
         t = torch.rand((B, 1), device=device)
-        t = t * 0.99 + 0.005
+        # avoid t extremely close to 1 to prevent tiny dt -> large 1/dt amplification
+        t = t * 0.9 + 0.05
 
         # noise
         trans_0 = torch.randn((B, L, 3), device=device) * self.flow_cfg.sigma_trans
@@ -283,7 +301,9 @@ class UniChiFlowModel(nn.Module):
                 rot_0[b, idx] = z0[1][0, perm]
                 ang_0[b, idx] = z0[2][0, perm]
 
-        trans_t = (1 - t[..., None]) * trans_0 + t[..., None] * trans_1
+        
+        sigma_min = getattr(self.flow_cfg, 'sigma_min', 1e-4)
+        trans_t = (1 - (1 - sigma_min) * t[..., None]) * trans_0 + t[..., None] * trans_1
         # t should be broadcastable to (B,L,1) inside slerp; using two new axes would
         # incorrectly broadcast (B,L,4) -> (1,B,L,4) and create an extra B dimension.
         rot_t = so3.geodesic_t(t[..., None], rot_1, rot_0)
@@ -440,7 +460,17 @@ class UniChiFlowModel(nn.Module):
         pred_states = (out['pred_trans_1'], out['pred_rot_1'], out['pred_ang_1'])
         target_states = (trans_1, rot_1, ang_1)
         
-        cfm_loss = ph_flow.flow_matching_loss(pred_states, target_states, mask)
+        # velocity-based flow matching (paper): compare v_pred vs v_true with per-component weights
+        sigma_min = getattr(self.flow_cfg, 'sigma_min', 1e-4) # default from paper config
+        cfm_loss = ph_flow.flow_matching_loss(
+            pred_states, target_states,
+            trans_t, rot_t, ang_t, t,
+            trans_0, rot_0, ang_0,
+            trans_1, rot_1, ang_1,
+            mask,
+            weights=(self.flow_cfg.cfm_w_trans, self.flow_cfg.cfm_w_rot, self.flow_cfg.cfm_w_ang),
+            sigma_min=sigma_min,
+        )
 
         sym_loss = ph_flow.compute_symmetry_loss(
             predict_fn=lambda b, t_in, seq_in, trans_in, rot_in, ang_in: self.predict_x1(b, t_in, seq_in, trans_in, rot_in, ang_in),
@@ -453,6 +483,7 @@ class UniChiFlowModel(nn.Module):
             mask=mask,
             pred_out=out,
             v_pred=None,
+            sigma_min=sigma_min,
         )
 
         # CE only on peptide residues
@@ -463,12 +494,89 @@ class UniChiFlowModel(nn.Module):
         
         # Apply weights with optional override for symmetry
         w_sym = sym_weight_override if sym_weight_override is not None else self.flow_cfg.sym_weight
-        total = self.flow_cfg.cfm_weight * cfm_loss + w_sym * sym_loss + self.flow_cfg.seq_weight * seq_loss
+        
+        if self.loss_log_vars is not None and sym_weight_override is None:
+            # Automatic Uncertainty Weighting (Homoscedastic Uncertainty)
+            # L = 1/(2*sigma^2) * L_i + log(sigma)
+            # using approximation: exp(-log_var) * L + log_var
+            # We treat cfm, sym, seq as 3 tasks.
+            
+            # Note: 0.5 factor is common in literature (Kendall et al.), but implementation varies.
+            # Here using: 0.5 * exp(-s) * L + 0.5 * s
+            
+            precisions = torch.exp(-self.loss_log_vars)
+            
+            # Loss 1: CFM
+            L_cfm = precisions[0] * cfm_loss + self.loss_log_vars[0]
+            
+            # Loss 2: Sym
+            L_sym = precisions[1] * sym_loss + self.loss_log_vars[1]
+            
+            # Loss 3: Seq
+            L_seq = precisions[2] * seq_loss + self.loss_log_vars[2]
+            
+            # Scale by original hyperparams to keep relative priority if desired?
+            # Standard Uncertainty Weighting replaces manual weights entirely.
+            # But here we might want to keep sym_weight as a hard switch (e.g. 0 during warmup)
+            
+            # If warmup is active (sym_weight_override < target), we should probably not learn its weight freely yet.
+            # But this block is only entered if sym_weight_override is None.
+            # Given the training script passes override, this block might be skipped during warmup!
+            # Let's handle the override logic below.
+            
+            total = 0.5 * (L_cfm + L_sym + L_seq)
+            
+            # To allow logging of effective weights
+            # eff_w_cfm = 0.5 * precisions[0].item()
+        
+        else:
+            # Manual weighting
+            total = self.flow_cfg.cfm_weight * cfm_loss + w_sym * sym_loss + self.flow_cfg.seq_weight * seq_loss
+
+        # Handle Mixed Mode: If auto_weighting is ON but we are in warmup (sym_weight_override passed)
+        if self.loss_log_vars is not None and sym_weight_override is not None:
+             precisions = torch.exp(-self.loss_log_vars)
+             
+             eff_w_cfm = 0.5 * precisions[0]
+             eff_w_seq = 0.5 * precisions[2]
+             
+             # Learn CFM and SEQ weights, but keep SYM manual (warmup controlled)
+             L_cfm = eff_w_cfm * cfm_loss + 0.5 * self.loss_log_vars[0]
+             L_seq = eff_w_seq * seq_loss + 0.5 * self.loss_log_vars[2]
+             
+             # Sym is manual
+             L_sym_manual = w_sym * sym_loss
+             
+             total = L_cfm + L_sym_manual + L_seq
+             
+             eff_w_sym = w_sym
+        
+        elif self.loss_log_vars is None:
+             eff_w_cfm = self.flow_cfg.cfm_weight
+             eff_w_sym = w_sym
+             eff_w_seq = self.flow_cfg.seq_weight
+             total = eff_w_cfm * cfm_loss + eff_w_sym * sym_loss + eff_w_seq * seq_loss
+        else:
+             # Fully auto (sym_weight_override is None)
+             precisions = torch.exp(-self.loss_log_vars)
+             eff_w_cfm = 0.5 * precisions[0]
+             eff_w_sym = 0.5 * precisions[1]
+             eff_w_seq = 0.5 * precisions[2]
+             
+             L_cfm = eff_w_cfm * cfm_loss + 0.5 * self.loss_log_vars[0]
+             L_sym = eff_w_sym * sym_loss + 0.5 * self.loss_log_vars[1]
+             L_seq = eff_w_seq * seq_loss + 0.5 * self.loss_log_vars[2]
+             
+             total = L_cfm + L_sym + L_seq
+
         return {
             'loss': total,
             'cfm_loss': cfm_loss,
             'sym_loss': sym_loss,
             'seq_loss': seq_loss,
+            'w_cfm': torch.as_tensor(eff_w_cfm),
+            'w_sym': torch.as_tensor(eff_w_sym),
+            'w_seq': torch.as_tensor(eff_w_seq),
         }
 
     @torch.no_grad()
@@ -481,19 +589,48 @@ class UniChiFlowModel(nn.Module):
         """
         B, L = aa.shape
         device = aa.device
+
         # reflection on local z-axis (M_z)
-        M = torch.diag(torch.tensor([1.0, 1.0, -1.0], device=device, dtype=rotmats.dtype))
+        # M = torch.diag(torch.tensor([1.0, 1.0, -1.0], device=device, dtype=rotmats.dtype))
 
         rotmats_dec = rotmats.clone()
         chir = chirality.view(B, 1, 1, 1).to(rotmats.dtype)
         pep = peptide_mask.view(B, L, 1, 1).to(rotmats.dtype)
-        base = torch.eye(3, device=device, dtype=rotmats.dtype)
-        if hard_constraints:
-            # Enforce chirality by reflecting D residues in local frame
-            rotmats_dec = rotmats_dec @ (base + chir * pep * (M - base))
+        
+        # New Strategy: "Reconstruct then Reflect"
+        # We reconstruct assuming L-amino acids (standard), then reflect the RESULTING coordinates
+        # if the target is D. This avoids issues with improper rotation matrices in the reconstruction chain.
+        # So we do NOT flip rotmats here.
+        # base = torch.eye(3, device=device, dtype=rotmats.dtype)
+        # if hard_constraints:
+        #     rotmats_dec = rotmats_dec @ (base + chir * pep * (M - base))
 
         pos14, _, _ = full_atom_reconstruction(R_bb=rotmats_dec, t_bb=trans, angles=angles, aa=aa)
         pos15 = F.pad(pos14, pad=(0, 0, 0, 15 - 14), value=0.0)
+        
+        # Apply Reflection to D-residues (chirality=1)
+        if hard_constraints:
+            # D-residues: Reflect z-coordinate (z -> -z)
+            # This turns the generated L-amino acid into a D-amino acid
+            # We must apply this to the final positions.
+            # chir shape: (B, 1, 1, 1) -> (B, 1, 1, 1)
+            # pep shape: (B, L, 1, 1)
+            # pos15 shape: (B, L, 15, 3)
+            
+            # Identify atoms to flip: Those in the peptide AND marked as Chiral (D)
+            # Broadcast chir and pep
+            flip_mask = (chir * pep).view(B, L, 1, 1) # 1 where we need to flip
+            
+            # Flip Z coordinate: x, y, z -> x, y, -z
+            # We can multiply z by (1 - 2*flip_mask) -> if flip: -1, else: 1
+            z_scale = 1.0 - 2.0 * flip_mask
+            
+            pos15_x = pos15[..., 0]
+            pos15_y = pos15[..., 1]
+            pos15_z = pos15[..., 2] * z_scale.squeeze(-1)
+            
+            pos15 = torch.stack([pos15_x, pos15_y, pos15_z], dim=-1)
+
         mask15 = get_heavyatom_mask(aa)
         return pos15, mask15
 
