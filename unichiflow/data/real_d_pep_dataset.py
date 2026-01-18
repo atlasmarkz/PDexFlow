@@ -26,13 +26,15 @@ def preprocess_real_d_structure(task, x_mirror=False):
         
         unique_chains = torch.unique(parsed_data['chain_nb'])
         pep_chain_idx = -1
-        
+        pep_chain_len = 1e9
+
+        # Choose the shortest valid chain (len >=3) as peptide to avoid picking receptor chains
         for chain_idx in unique_chains:
             mask = parsed_data['chain_nb'] == chain_idx
             chain_len = mask.sum().item()
-            if chain_len >= 3:
+            if chain_len >= 3 and chain_len < pep_chain_len:
                 pep_chain_idx = chain_idx
-                break
+                pep_chain_len = chain_len
         
         if pep_chain_idx == -1:
             raise ValueError("No valid peptide chain found (len >= 3)")
@@ -88,9 +90,20 @@ def preprocess_real_d_structure(task, x_mirror=False):
         return None
 
 class RealDPepDataset(PepDataset):
-    def __init__(self, structure_dir, cache_dir, name='real_d_pep', reset=False):
-        # We don't use x_mirror, y_mirror, z_mirror for real data usually, 
-        # unless we want data augmentation. Assuming no mirroring for now.
+    def __init__(self, structure_dir, cache_dir, name='real_d_pep', reset=False, peptide_subdir=None, skip_receptor=True):
+        """Dataset for real (or mirrored) D-peptides.
+
+        Args:
+            structure_dir: root folder containing pdb files. For pepmerge-like layout you can set
+                peptide_subdir="peptide" to only ingest peptide files and skip receptor.
+            cache_dir: LMDB cache directory.
+            reset: whether to rebuild cache.
+            peptide_subdir: optional subfolder name to include (e.g., "peptide").
+            skip_receptor: if True, ignore files whose path contains "receptor".
+        """
+        self.peptide_subdir = peptide_subdir
+        self.skip_receptor = skip_receptor
+        # Mirror along x to convert L coordinates to D chirality for real D-peptide data.
         super().__init__(structure_dir=structure_dir, dataset_dir=cache_dir, name=name, x_mirror=False, reset=reset)
 
     def _load_structures(self, reset):
@@ -112,6 +125,11 @@ class RealDPepDataset(PepDataset):
                         # preprocess_real_d_structure expects pdb_path
                         # We can store the relative path from structure_dir
                         rel_path = os.path.relpath(os.path.join(root, file), self.structure_dir)
+                        parts = rel_path.split(os.sep)
+                        if self.skip_receptor and 'receptor' in parts:
+                            continue
+                        if self.peptide_subdir and self.peptide_subdir not in parts:
+                            continue
                         todo_pdbs.append(rel_path)
             
             if len(todo_pdbs) > 0:
@@ -121,8 +139,10 @@ class RealDPepDataset(PepDataset):
         tasks = []
         for pdb_fname in pdb_list:
             pdb_path = os.path.join(self.structure_dir, pdb_fname)
-            # ID is the filename without extension
-            pdb_id = os.path.splitext(os.path.basename(pdb_fname))[0]
+            # Use a path-based ID to avoid collisions (e.g., many peptide.pdb files)
+            # Replace path separators with underscores and drop extension
+            rel_no_ext = os.path.splitext(pdb_fname)[0]
+            pdb_id = rel_no_ext.replace(os.sep, '_')
             tasks.append({'id': pdb_id, 'pdb_path': pdb_path})
 
         data_list = joblib.Parallel(n_jobs=max(joblib.cpu_count() // 2, 1), )(

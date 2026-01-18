@@ -6,7 +6,8 @@ import torch
 from omegaconf import DictConfig
 from tqdm import tqdm
 
-from unichiflow.data.pep_dataloader import PepDataset, PaddingCollate
+from unichiflow.data.pep_dataloader import PaddingCollate
+from unichiflow.data.real_d_pep_dataset import RealDPepDataset
 from unichiflow.data import utils as du
 from unichiflow.data.writers import save_pdb
 from unichiflow.data.pep_constants import BBHeavyAtom
@@ -43,11 +44,10 @@ def main(cfg: DictConfig):
     os.makedirs(out_dir, exist_ok=True)
     print(f"Saving inference results to: {out_dir}")
 
-    ds = PepDataset(
+    ds = RealDPepDataset(
         structure_dir=str(cfg.data.structure_dir),
-        dataset_dir=str(cfg.data.cache_dir),
-        name="pepmerge_test",
-        x_mirror=False,
+        cache_dir=str(cfg.data.cache_dir),
+        name="real_d_test",
         reset=bool(cfg.data.reset_cache),
     )
 
@@ -94,7 +94,12 @@ def main(cfg: DictConfig):
     for idx in tqdm(range(min(len(ds), 50)), desc="inference"):
         data_list = [deepcopy(ds[idx]) for _ in range(int(sam.num_samples))]
         batch = collate(data_list)
-        # overwrite chirality (0=L,1=D) for peptide decoding
+
+        # 如果需要“肽 + 受体一起生成”，将 generate_mask 设为全 1
+        if bool(getattr(sam, "gen_receptor", False)):
+            batch['generate_mask'] = torch.ones_like(batch['aa'], dtype=torch.bool)
+
+        # overwrite chirality (0=L,1=D) for decoding
         batch['chirality'] = torch.full((len(data_list),), int(sam.chirality_token), dtype=torch.long)
 
         batch = du.recursive_to(batch, device)
@@ -114,12 +119,13 @@ def main(cfg: DictConfig):
         pos_out = torch.where(batch['generate_mask'][:, :, None, None], pos15_pred, batch['pos_heavyatom'])
         mask_out = torch.where(batch['generate_mask'][:, :, None], mask15_pred, batch['mask_heavyatom'])
 
-        # If we generated D-peptides (chirality=1), the dataset provided Mirrored Receptor (D) and Model predicted Mirrored (L-like) Peptide.
-        # So pos_out is currently in the Mirror Universe (D-Rec + L-Pep).
-        # We want to save the Real Universe structure (L-Rec + D-Pep).
-        # So we flip everything back: pos -> -pos.
-        if int(sam.chirality_token) == 1:
-            pos_out = -pos_out
+        # NOTE: WE REMOVED THE GLOBAL FLIP HERE.
+        # The Decoder (decode_to_heavyatom15) with hard_constraints=True ALREADY generates D-geometric coordinates 
+        # (via Z-flip) for D-peptides.
+        # If we flip again here (Global -1), we invert the D-peptide back to L, destroying the chirality.
+        # We assume the Receptor input was Real (L) and we want D-peptide output.
+        # if int(sam.chirality_token) == 1:
+        #     pos_out = -pos_out
 
         name = batch['id'][0]
         save_dir = os.path.join(out_dir, name)

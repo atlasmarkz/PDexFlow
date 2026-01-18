@@ -7,10 +7,12 @@ train:
 
 # Data config (for dataset init if needed)
 data:
-  structure_dir: /root/autodl-tmp/pepmerge 
-  cache_dir: /root/autodl-fs/UniChiflow/pep_cache
-  reset_cache: false
+  structure_dir: /root/autodl-tmp/pepmerge
+  cache_dir: /root/autodl-fs/UniChiflow/pep_cache_lora_d
+  reset_cache: true
   split: test 
+  peptide_subdir: peptide    # set to "peptide" when using pepmerge split folders
+  skip_receptor: false     # ignore receptor files for pepmerge
   twin_universe_prob: 0.0
 
 # Model Architecture (Must match the trained checkpoint)
@@ -25,7 +27,7 @@ model:
 
 # Flow settings (Used in model init)
 flow:
-  sigma_trans: 0.5 
+  sigma_trans: 0.3
   angle_purify: true
   use_ot: true 
   auto_loss_weighting: true # Match training config
@@ -43,7 +45,7 @@ esm:
 
 # LoRA Adapter (Enable if using a LoRA checkpoint or backbone trained with LoRA)
 chi_lora:
-  enable: true  
+  enable: false
   rank: 8
   alpha: 16.0
   dropout: 0.0
@@ -54,7 +56,7 @@ chi_lora:
 sample:
   # Path to backbone checkpoint (required)
   # Replace with actual path
-  ckpt_path: "/root/autodl-fs/UniChiflow/outputs/2026_01_13__16_49_05/checkpoints/best_model.pt"
+  ckpt_path: "/root/autodl-fs/UniChiflow/outputs/2026_01_16__21_07_46/checkpoints/best_model.pt"
   
   # Path to LoRA checkpoint (optional, if separate from backbone)
   lora_ckpt_path: "/root/autodl-fs/UniChiflow/outputs_lora/2026_01_14__13_57_07/checkpoints/best_model.pt"
@@ -65,3 +67,4 @@ sample:
   output_dir: /root/autodl-fs/UniChiflow/inference_output
   chirality_token: 1 # 0=L, 1=D
   use_hard_decoder: true 
+  gen_receptor: false  # set true to generate both receptor and peptide (generate_mask=1 for all residues)

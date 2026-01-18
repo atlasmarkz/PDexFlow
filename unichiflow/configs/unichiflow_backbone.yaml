@@ -21,8 +21,8 @@ data:
   cache_dir: /root/autodl-fs/UniChiflow/pep_cache
   split: train   # train|test|all
   reset_cache: false
-  twin_universe_prob: 0.5   # probability to mirror a sample (x->-x) as synthetic D (used when deterministic_pairs=false)
-  deterministic_pairs: true # use full L set and full mirrored D set deterministically
+  twin_universe_prob: 1.0   # 1.0 means always mirror (L->D), training purely on D-space
+  deterministic_pairs: false # Disable mixing L and D pairs. Train on D-only distribution.
 
 model:
   d_model: 256

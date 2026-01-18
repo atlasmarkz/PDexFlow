@@ -591,11 +591,18 @@ class UniChiFlowModel(nn.Module):
         device = aa.device
 
         # reflection on local z-axis (M_z)
-        # M = torch.diag(torch.tensor([1.0, 1.0, -1.0], device=device, dtype=rotmats.dtype))
+        M = torch.diag(torch.tensor([1.0, 1.0, -1.0], device=device, dtype=rotmats.dtype))
 
         rotmats_dec = rotmats.clone()
         chir = chirality.view(B, 1, 1, 1).to(rotmats.dtype)
         pep = peptide_mask.view(B, L, 1, 1).to(rotmats.dtype)
+        
+        base = torch.eye(3, device=device, dtype=rotmats.dtype)
+        if hard_constraints:
+             # Enforce chirality by reflecting D residues in local frame
+             # This creates a D-oriented backbone frame.
+             # Combined with L-constants in full_atom_reconstruction, this creates D-geometry.
+             rotmats_dec = rotmats_dec @ (base + chir * pep * (M - base))
         
         # New Strategy: "Reconstruct then Reflect"
         # We reconstruct assuming L-amino acids (standard), then reflect the RESULTING coordinates
@@ -609,28 +616,11 @@ class UniChiFlowModel(nn.Module):
         pos15 = F.pad(pos14, pad=(0, 0, 0, 15 - 14), value=0.0)
         
         # Apply Reflection to D-residues (chirality=1)
-        if hard_constraints:
-            # D-residues: Reflect z-coordinate (z -> -z)
-            # This turns the generated L-amino acid into a D-amino acid
-            # We must apply this to the final positions.
-            # chir shape: (B, 1, 1, 1) -> (B, 1, 1, 1)
-            # pep shape: (B, L, 1, 1)
-            # pos15 shape: (B, L, 15, 3)
-            
-            # Identify atoms to flip: Those in the peptide AND marked as Chiral (D)
-            # Broadcast chir and pep
-            flip_mask = (chir * pep).view(B, L, 1, 1) # 1 where we need to flip
-            
-            # Flip Z coordinate: x, y, z -> x, y, -z
-            # We can multiply z by (1 - 2*flip_mask) -> if flip: -1, else: 1
-            z_scale = 1.0 - 2.0 * flip_mask
-            
-            pos15_x = pos15[..., 0]
-            pos15_y = pos15[..., 1]
-            pos15_z = pos15[..., 2] * z_scale.squeeze(-1)
-            
-            pos15 = torch.stack([pos15_x, pos15_y, pos15_z], dim=-1)
-
+        # if hard_constraints:
+             # Reverted: The global coordinate reflection (below) was incorrect as it mirrored the translation (position) too.
+             # We rely on the rotmat reflection above.
+             # pass
+        
         mask15 = get_heavyatom_mask(aa)
         return pos15, mask15
 

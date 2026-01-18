@@ -14,11 +14,13 @@ train:
     weight_decay: 0.0
 
 data:
-  structure_dir: /root/autodl-tmp/d_pep_data
-  cache_dir: /root/autodl-fs/UniChiflow/pep_cache_lora
+  structure_dir: /root/autodl-tmp/d_pep_structures
+  cache_dir: /root/autodl-fs/UniChiflow/pep_cache_lora_d
   split: train
-  reset_cache: false
-  twin_universe_prob: 0.0   # Real D-peptides, no mirroring needed
+  reset_cache: true
+  peptide_subdir: null    # e.g., "peptide" for pepmerge layout; null means use all
+  skip_receptor: false    # skip files in receptor folders when pepmerge is used
+  twin_universe_prob: 0.0   # Real D-peptides; mirroring handled in dataset (x_mirror)
 
 model:
   d_model: 256
@@ -55,6 +57,6 @@ chi_lora:
   freeze_backbone: true  # Freeze backbone to train only LoRA adapters
 
 sample:
-  ckpt_path: "/root/autodl-fs/UniChiflow/outputs/2026_01_13__16_49_05/checkpoints/best_model.pt" # MUST BE SET to the result of Stage 1 (pepmerge) training
+  ckpt_path: "/root/autodl-fs/UniChiflow/outputs/2026_01_16__21_07_46/checkpoints/best_model.pt" # MUST BE SET to the result of Stage 1 (pepmerge) training
   device: cuda
 
