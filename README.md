@@ -66,6 +66,21 @@ python Eval/batch_eval.py /path/to/generated_pdbs \
     --workers 8
 ```
 
+For model-level benchmarking (AAR/Chiral/RMSD + latency/NFE + novelty/scaling/generalization splits), run:
+```bash
+python -W ignore -m unichiflow.experiments.eval_unichiflow \
+    sample.ckpt_path=path/to/checkpoint.pt \
+    eval.dataset_name=pepmerge_test \
+    eval.reference.dataset_name=pepmerge_train
+```
+
+Optional robustness summary from an ablation CSV:
+```bash
+python -W ignore -m unichiflow.experiments.summarize_sensitivity \
+    path/to/ablation_runs.csv \
+    --metrics chiral_err,rmsd_ca,motif_acc
+```
+
 #### Metrics Explained:
 *   **AAR (Atom-Atom Recovery)**: Contact recovery rate against reference.
 *   **RMSD**: Geometric deviation of the backbone.

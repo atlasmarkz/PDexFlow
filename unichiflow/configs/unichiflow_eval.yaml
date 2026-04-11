@@ -1,0 +1,93 @@
+# UniChiFlow comprehensive evaluation config
+
+train:
+  seed: 2024
+  device: cuda
+
+data:
+  structure_dir: /root/autodl-tmp/pepmerge
+  cache_dir: /root/autodl-fs/UniChiflow/pep_cache
+  reset_cache: false
+
+model:
+  d_model: 256
+  n_layers: 6
+  n_heads: 8
+  dropout: 0.0
+  max_len: 512
+  aatype_vocab: 21
+  angle_dim: 5
+
+flow:
+  sigma_trans: 0.3
+  angle_purify: true
+  use_ot: true
+
+esm:
+  enable: true
+  model: esm2_t12_35M_UR50D
+  repr_layer: -1
+  requires_grad: false
+  use_adapter: true
+  rank: 8
+  alpha: 8.0
+  dropout: 0.0
+
+chi_lora:
+  enable: false
+  rank: 8
+  alpha: 16.0
+  dropout: 0.0
+  targets: [attn_out, ffn]
+  freeze_backbone: true
+
+sample:
+  ckpt_path: /root/autodl-fs/UniChiflow/outputs/checkpoints/best_model.pt
+  device: cuda
+  num_steps: 50
+  max_eval: 64
+  use_hard_decoder: true
+  output_dir: /root/autodl-fs/UniChiflow/eval_output
+
+eval:
+  dataset_name: pepmerge_test
+  dataset_x_mirror: false
+  save_examples: 3
+
+  reference:
+    enable: true
+    dataset_name: pepmerge_train
+    x_mirror: true
+    max_samples: 200
+    embed_max_samples: 200
+
+  scaling:
+    peptide_bins: [6, 8, 10, 12, 16, 24, 32]
+    receptor_bins: [32, 64, 128, 256, 512, 1024]
+
+  diversity:
+    cluster_distance_threshold: 0.35
+
+  generalization:
+    # sequence-identity bins in [0,1]
+    seq_identity_bins: [0.3, 0.5, 0.7, 0.9]
+
+  # Optional external MD summary input CSV.
+  # Expected columns: sample_id,time_ps,rmsd,hbond_count
+  dynamic:
+    enable: false
+    md_csv: ""
+
+  # Optional external orthogonal scoring CSV.
+  # Expected columns include rosetta_col and orth_col.
+  orthogonal:
+    enable: false
+    csv_path: ""
+    rosetta_col: rosetta_score
+    orth_col: orth_score
+
+  # Reported training-cost metadata for paper tables.
+  training_cost:
+    gpu_count: 1
+    gpu_hours: 0.0
+    peak_mem_mb: 0.0
