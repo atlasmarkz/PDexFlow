@@ -8,6 +8,7 @@ from tqdm import tqdm
 
 from unichiflow.data.pep_dataloader import PaddingCollate
 from unichiflow.data.real_d_pep_dataset import RealDPepDataset
+from unichiflow.data.pepmerge_dataset import PepMergeDataset
 from unichiflow.data import utils as du
 from unichiflow.data.writers import save_pdb
 from unichiflow.data.pep_constants import BBHeavyAtom
@@ -44,12 +45,23 @@ def main(cfg: DictConfig):
     os.makedirs(out_dir, exist_ok=True)
     print(f"Saving inference results to: {out_dir}")
 
-    ds = RealDPepDataset(
-        structure_dir=str(cfg.data.structure_dir),
-        cache_dir=str(cfg.data.cache_dir),
-        name="real_d_test",
-        reset=bool(cfg.data.reset_cache),
-    )
+    if bool(cfg.data.get("use_pepmerge", False)):
+        # Align LMDB name with existing caches: pepmerge_{split}_structure_cache.lmdb
+        ds = PepMergeDataset(
+            structure_dir=str(cfg.data.structure_dir),
+            cache_dir=str(cfg.data.cache_dir),
+            name=f"pepmerge_{cfg.data.split}",
+            reset=bool(cfg.data.reset_cache),
+        )
+    else:
+        ds = RealDPepDataset(
+            structure_dir=str(cfg.data.structure_dir),
+            cache_dir=str(cfg.data.cache_dir),
+            name="real_d_test",
+            reset=bool(cfg.data.reset_cache),
+            peptide_subdir=cfg.data.get("peptide_subdir"),
+            skip_receptor=bool(cfg.data.get("skip_receptor", True)),
+        )
 
     model = UniChiFlowModel(
         d_model=int(cfg.model.d_model),
@@ -91,6 +103,7 @@ def main(cfg: DictConfig):
 
     collate = PaddingCollate(eight=False)
 
+    SCALE = 0.1  # match train-time coordinate normalization
     for idx in tqdm(range(min(len(ds), 50)), desc="inference"):
         data_list = [deepcopy(ds[idx]) for _ in range(int(sam.num_samples))]
         batch = collate(data_list)
@@ -101,6 +114,10 @@ def main(cfg: DictConfig):
 
         # overwrite chirality (0=L,1=D) for decoding
         batch['chirality'] = torch.full((len(data_list),), int(sam.chirality_token), dtype=torch.long)
+
+        # match training: scale coordinates for stability
+        if 'pos_heavyatom' in batch:
+            batch['pos_heavyatom'] = batch['pos_heavyatom'] * SCALE
 
         batch = du.recursive_to(batch, device)
         sample = model.sample(batch, num_steps=int(sam.num_steps), angle_purify=bool(cfg.flow.angle_purify))
@@ -115,7 +132,7 @@ def main(cfg: DictConfig):
             hard_constraints=bool(cfg.sample.get("use_hard_decoder", True)),
         )
 
-        # Use predicted peptide, keep receptor from GT
+        # Use predicted peptide, keep receptor from GT (in scaled domain)
         pos_out = torch.where(batch['generate_mask'][:, :, None, None], pos15_pred, batch['pos_heavyatom'])
         mask_out = torch.where(batch['generate_mask'][:, :, None], mask15_pred, batch['mask_heavyatom'])
 
@@ -135,6 +152,10 @@ def main(cfg: DictConfig):
         chain_id = [list(item) for item in zip(*batch['chain_id'])][0]
         icode = [list(item) for item in zip(*batch['icode'])][0]
 
+        # unscale positions back to original units for saving
+        pos_out_save = pos_out / SCALE
+        pos_gt_save = batch['pos_heavyatom'] / SCALE
+
         for j in range(pos_out.shape[0]):
             data_saved = {
                 'chain_nb': batch['chain_nb'][0].detach().cpu(),
@@ -143,7 +164,7 @@ def main(cfg: DictConfig):
                 'icode': icode,
                 'aa': sample['seq'][j].detach().cpu(),
                 'mask_heavyatom': mask_out[j].detach().cpu(),
-                'pos_heavyatom': pos_out[j].detach().cpu(),
+                'pos_heavyatom': pos_out_save[j].detach().cpu(),
             }
             save_pdb(data_saved, path=os.path.join(save_dir, f"sample_{j}.pdb"))
 
@@ -154,7 +175,7 @@ def main(cfg: DictConfig):
             'icode': icode,
             'aa': batch['aa'][0].detach().cpu(),
             'mask_heavyatom': batch['mask_heavyatom'][0].detach().cpu(),
-            'pos_heavyatom': batch['pos_heavyatom'][0].detach().cpu(),
+            'pos_heavyatom': pos_gt_save[0].detach().cpu(),
         }
         save_pdb(gt_data, path=os.path.join(save_dir, "gt.pdb"))
 

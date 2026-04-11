@@ -9,11 +9,12 @@ train:
 data:
   structure_dir: /root/autodl-tmp/pepmerge
   cache_dir: /root/autodl-fs/UniChiflow/pep_cache_lora_d
-  reset_cache: true
+  reset_cache: false
   split: test 
   peptide_subdir: peptide    # set to "peptide" when using pepmerge split folders
   skip_receptor: false     # ignore receptor files for pepmerge
   twin_universe_prob: 0.0
+  use_pepmerge: true
 
 # Model Architecture (Must match the trained checkpoint)
 model:
