@@ -4,9 +4,13 @@ outputs_lora/
 unichiflow_output/
 pep_cache/
 pep_cache_lora/
+pep_cache_lora_d/
 pep_cache_dreal/
 *.lmdb
 *-cache.lmdb*
+
+# Metrics (experiment results)
+metrics/
 
 # Checkpoints and model weights
 ckpt/
@@ -45,3 +49,6 @@ logs/
 # Misc
 .pytest_cache/
 .cache/
+
+# Local config overrides (keep .example.yaml tracked)
+config.yaml

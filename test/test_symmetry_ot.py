@@ -1,8 +1,8 @@
 import torch
 
-from unichiflow.models.chiralformer import UniChiFlowModel
-from unichiflow.data.minibatch_ot import minibatch_optimal_transport
-from unichiflow.data.pep_constants import BBHeavyAtom
+from src.models.chiralformer import UniChiFlowModel
+from src.data.minibatch_ot import minibatch_optimal_transport
+from src.data.pep_constants import BBHeavyAtom
 
 
 def make_dummy_batch(B: int = 2, L: int = 8, angle_dim: int = 5):
