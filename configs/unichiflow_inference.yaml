@@ -1,0 +1,63 @@
+# UniChiFlow Inference Config
+# Copy to config.yaml and modify paths as needed
+
+train:
+  seed: 2024
+  device: cuda
+
+data:
+  structure_dir: data/pepmerge         # Path to preprocessed PDB structures
+  cache_dir: .cache/pep_cache_subset  # LMDB cache (30% subset)
+  reset_cache: false
+  split: test
+  peptide_subdir: peptide              # "peptide" for pepmerge split folders
+  skip_receptor: false
+  twin_universe_prob: 0.0
+  use_pepmerge: true
+
+model:
+  d_model: 128
+  n_layers: 4
+  n_heads: 8
+  dropout: 0.0                         # Inference: no dropout
+  max_len: 512
+  aatype_vocab: 21
+  angle_dim: 5
+
+flow:
+  sigma_trans: 0.5
+  sigma_min: 0.0001
+  angle_purify: true
+  use_ot: true
+  auto_loss_weighting: true
+
+esm:
+  enable: true
+  model: esm2_t12_35M_UR50D
+  repr_layer: -1
+  requires_grad: false
+  use_adapter: true
+  rank: 8
+  alpha: 8.0
+  dropout: 0.0
+
+chi_lora:
+  enable: false                        # Set true if using LoRA checkpoint
+  rank: 8
+  alpha: 16.0
+  dropout: 0.0
+  targets: [attn_out, ffn]
+  freeze_backbone: true
+
+sample:
+  # Override via CLI:
+  #   python -m src.scripts.inference_unichiflow sample.ckpt_path=/path/to/ckpt.pt
+  ckpt_path: "outputs/2026_05_06__00_21_01/checkpoints/best_model.pt"
+  lora_ckpt_path: "outputs_lora/checkpoints/best_model.pt"  # Optional
+  device: cuda
+  num_samples: 1
+  num_steps: 50
+  output_dir: outputs/inference
+  chirality_token: 1                  # 0 = L-peptide, 1 = D-peptide
+  use_hard_decoder: true
+  gen_receptor: false

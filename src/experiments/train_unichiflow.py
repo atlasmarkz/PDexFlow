@@ -11,11 +11,12 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from src.data.pep_dataloader import PaddingCollate, TwinUniversePepDataset
+from src.data.pepmerge_dataset import PepMergeSubsetDataset
 from src.data import utils as du
 from src.models.chiralformer import UniChiFlowModel
 
 
-config_path = os.path.join(os.path.dirname(__file__), "..", "..", "configs")
+config_path = os.path.abspath("configs")
 config_name = "unichiflow_backbone.yaml"
 
 
@@ -79,14 +80,27 @@ def main(cfg: DictConfig):
     ckpt_dir = os.path.join(out_dir, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
 
-    ds = TwinUniversePepDataset(
-        structure_dir=str(cfg.data.structure_dir),
-        cache_dir=str(cfg.data.cache_dir),
-        split_name=f"pepmerge_{cfg.data.split}",
-        mirror_prob=float(cfg.data.twin_universe_prob),
-        reset=bool(cfg.data.reset_cache),
-        deterministic_pairs=bool(cfg.data.get("deterministic_pairs", False)),
-    )
+    use_subset = bool(cfg.data.get("use_subset", False))
+    if use_subset:
+        fraction = float(cfg.data.get("subset_fraction", 0.3))
+        mirror_prob = float(cfg.data.get("subset_mirror_prob", 1.0))
+        ds = PepMergeSubsetDataset(
+            structure_dir=str(cfg.data.structure_dir),
+            cache_dir=str(cfg.data.cache_dir),
+            name=f"pepmerge_subset_{fraction}",
+            reset=bool(cfg.data.reset_cache),
+            fraction=fraction,
+            mirror_prob=mirror_prob,
+        )
+    else:
+        ds = TwinUniversePepDataset(
+            structure_dir=str(cfg.data.structure_dir),
+            cache_dir=str(cfg.data.cache_dir),
+            split_name=f"pepmerge_{cfg.data.split}",
+            mirror_prob=float(cfg.data.twin_universe_prob),
+            reset=bool(cfg.data.reset_cache),
+            deterministic_pairs=bool(cfg.data.get("deterministic_pairs", False)),
+        )
     loader = DataLoader(ds, batch_size=int(cfg.train.batch_size), shuffle=True, num_workers=int(cfg.train.num_workers),
                         collate_fn=PaddingCollate(eight=True), pin_memory=True)
     it = _inf_iterator(loader)

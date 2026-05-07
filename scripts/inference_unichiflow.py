@@ -1,5 +1,8 @@
 import os
+import sys
 from copy import deepcopy
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import hydra
 import torch
@@ -17,7 +20,7 @@ from src.checkpoint import load_backbone_into_lora
  
 
 
-config_path = os.path.join(os.path.dirname(__file__), "..", "..", "configs")
+config_path = os.path.join(os.path.dirname(__file__), "..", "configs")
 config_name = "unichiflow_inference.yaml"
 
 
@@ -104,11 +107,11 @@ def main(cfg: DictConfig):
     collate = PaddingCollate(eight=False)
 
     SCALE = 0.1  # match train-time coordinate normalization
-    for idx in tqdm(range(min(len(ds), 50)), desc="inference"):
+    for idx in tqdm(range(min(len(ds), 10)), desc="inference"):
         data_list = [deepcopy(ds[idx]) for _ in range(int(sam.num_samples))]
         batch = collate(data_list)
 
-        # 如果需要“肽 + 受体一起生成”，�?generate_mask 设为�?1
+        # generate_mask to 1 if need peptide+receptor together
         if bool(getattr(sam, "gen_receptor", False)):
             batch['generate_mask'] = torch.ones_like(batch['aa'], dtype=torch.bool)
 

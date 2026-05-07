@@ -1,10 +1,13 @@
 import csv
 import json
 import os
+import sys
 import time
 from collections import defaultdict
 from copy import deepcopy
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import hydra
 import numpy as np
@@ -20,7 +23,7 @@ from src.data.writers import save_pdb
 from src.analysis.metrics import aar_accuracy, chirality_error, kabsch_rmsd
 from src.models.chiralformer import UniChiFlowModel
 
-config_path = os.path.join(os.path.dirname(__file__), "..", "..", "configs")
+config_path = os.path.abspath("configs")
 config_name = "unichiflow_eval.yaml"
 
 

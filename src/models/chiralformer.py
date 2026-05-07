@@ -201,12 +201,12 @@ class UniChiFlowModel(nn.Module):
             self.esm_proj = nn.Linear(esm_hidden_size, self.d_model)
             use_adapter = bool(esm.get("use_adapter", True))
             if use_adapter:
-                # Adapter应为nn.Linear(d_model, d_model)，保证输入输出都是d_model
                 self.esm_adapter = ChiralBridgeLoRA(
                     nn.Linear(self.d_model, self.d_model),
                     rank=int(esm.get("rank", 8)),
                     alpha=float(esm.get("alpha", 8.0)),
                     dropout=float(esm.get("dropout", 0.0)),
+                    gate_init=0.0,
                 )
 
         self.out_trans = nn.Sequential(nn.LayerNorm(self.d_model), nn.Linear(self.d_model, 3, bias=False))
@@ -226,11 +226,11 @@ class UniChiFlowModel(nn.Module):
         modules = []
         for layer in self.trunk.layers:
             if "ffn" in targets:
-                layer.linear1 = ChiralBridgeLoRA(layer.linear1, rank=self.chi_lora_cfg.rank, alpha=self.chi_lora_cfg.alpha, dropout=self.chi_lora_cfg.dropout)
-                layer.linear2 = ChiralBridgeLoRA(layer.linear2, rank=self.chi_lora_cfg.rank, alpha=self.chi_lora_cfg.alpha, dropout=self.chi_lora_cfg.dropout)
+                layer.linear1 = ChiralBridgeLoRA(layer.linear1, rank=self.chi_lora_cfg.rank, alpha=self.chi_lora_cfg.alpha, dropout=self.chi_lora_cfg.dropout, gate_init=0.0)
+                layer.linear2 = ChiralBridgeLoRA(layer.linear2, rank=self.chi_lora_cfg.rank, alpha=self.chi_lora_cfg.alpha, dropout=self.chi_lora_cfg.dropout, gate_init=0.0)
                 modules.extend([layer.linear1, layer.linear2])
             if "attn_out" in targets:
-                layer.self_attn.out_proj = ChiralBridgeLoRA(layer.self_attn.out_proj, rank=self.chi_lora_cfg.rank, alpha=self.chi_lora_cfg.alpha, dropout=self.chi_lora_cfg.dropout)
+                layer.self_attn.out_proj = ChiralBridgeLoRA(layer.self_attn.out_proj, rank=self.chi_lora_cfg.rank, alpha=self.chi_lora_cfg.alpha, dropout=self.chi_lora_cfg.dropout, gate_init=0.0)
                 modules.append(layer.self_attn.out_proj)
 
         self._chi_lora_modules = tuple(modules)
@@ -303,7 +303,7 @@ class UniChiFlowModel(nn.Module):
 
         
         sigma_min = getattr(self.flow_cfg, 'sigma_min', 1e-4)
-        trans_t = (1 - (1 - sigma_min) * t[..., None]) * trans_0 + t[..., None] * trans_1
+        trans_t = (1.0 - t[..., None]) * trans_0 + t[..., None] * trans_1
         # t should be broadcastable to (B,L,1) inside slerp; using two new axes would
         # incorrectly broadcast (B,L,4) -> (1,B,L,4) and create an extra B dimension.
         rot_t = so3.geodesic_t(t[..., None], rot_1, rot_0)
@@ -387,7 +387,7 @@ class UniChiFlowModel(nn.Module):
                 esm_cond = esm_cond.squeeze(-2)
             if esm_cond.shape[:2] != (B, L):
                 raise ValueError(f"esm_cond must have shape (B,L,*) matching the sequence length, got {tuple(esm_cond.shape)} vs (B={B},L={L})")
-            # === 先用esm_proj投影到d_model，再送入esm_adapter（LoRA�?===
+            # === 先用esm_proj投影到d_model，再送入esm_adapter（LoRA�?===
             if self.esm_proj is not None:
                 esm_cond = self.esm_proj(esm_cond)  # [B, L, hidden_size] -> [B, L, d_model]
             if self.esm_adapter is not None:
@@ -454,14 +454,10 @@ class UniChiFlowModel(nn.Module):
         gen_mask = batch['generate_mask'].bool()
         mask = res_mask & gen_mask
 
-        # Changed to State-Matching Loss (x1-prediction) to avoid 1/(1-t) singularity.
-        # v_true -> target states (trans_1, rot_1, ang_1)
-        # v_pred -> predicted states (from model output)
         pred_states = (out['pred_trans_1'], out['pred_rot_1'], out['pred_ang_1'])
         target_states = (trans_1, rot_1, ang_1)
-        
-        # velocity-based flow matching (paper): compare v_pred vs v_true with per-component weights
-        sigma_min = getattr(self.flow_cfg, 'sigma_min', 1e-4) # default from paper config
+
+        sigma_min = getattr(self.flow_cfg, 'sigma_min', 1e-4)
         cfm_loss = ph_flow.flow_matching_loss(
             pred_states, target_states,
             trans_t, rot_t, ang_t, t,
@@ -482,7 +478,6 @@ class UniChiFlowModel(nn.Module):
             ang_t=ang_t,
             mask=mask,
             pred_out=out,
-            v_pred=None,
             sigma_min=sigma_min,
         )
 
@@ -583,44 +578,27 @@ class UniChiFlowModel(nn.Module):
     def decode_to_heavyatom15(self, aa: torch.Tensor, trans: torch.Tensor, rotmats: torch.Tensor, angles: torch.Tensor, chirality: torch.Tensor, peptide_mask: torch.Tensor, hard_constraints: bool = True):
         """Geometric decoder with optional hard chirality enforcement.
 
-        When hard_constraints is True (default), uses torsion-based reconstruction and applies
-        mirrored local frames for D-mode residues to guarantee chirality correctness. When False,
-        it skips the reflection, serving as a soft/ablated decoder for chiral error analysis.
+        When hard_constraints is True (default), applies Z-axis frame reflection to D-mode
+        residues as per paper Eq. (10). The angle values remain unchanged; only the local
+        coordinate frame is mirrored. This guarantees correct D-chirality geometry without
+        additional angle modifications that could distort the learned torsion distribution.
         """
         B, L = aa.shape
         device = aa.device
 
-        # reflection on local z-axis (M_z)
         M = torch.diag(torch.tensor([1.0, 1.0, -1.0], device=device, dtype=rotmats.dtype))
 
         rotmats_dec = rotmats.clone()
         chir = chirality.view(B, 1, 1, 1).to(rotmats.dtype)
         pep = peptide_mask.view(B, L, 1, 1).to(rotmats.dtype)
-        
+
         base = torch.eye(3, device=device, dtype=rotmats.dtype)
         if hard_constraints:
-             # Enforce chirality by reflecting D residues in local frame
-             # This creates a D-oriented backbone frame.
-             # Combined with L-constants in full_atom_reconstruction, this creates D-geometry.
-             rotmats_dec = rotmats_dec @ (base + chir * pep * (M - base))
-        
-        # New Strategy: "Reconstruct then Reflect"
-        # We reconstruct assuming L-amino acids (standard), then reflect the RESULTING coordinates
-        # if the target is D. This avoids issues with improper rotation matrices in the reconstruction chain.
-        # So we do NOT flip rotmats here.
-        # base = torch.eye(3, device=device, dtype=rotmats.dtype)
-        # if hard_constraints:
-        #     rotmats_dec = rotmats_dec @ (base + chir * pep * (M - base))
+            rotmats_dec = rotmats_dec @ (base + chir * pep * (M - base))
 
         pos14, _, _ = full_atom_reconstruction(R_bb=rotmats_dec, t_bb=trans, angles=angles, aa=aa)
         pos15 = F.pad(pos14, pad=(0, 0, 0, 15 - 14), value=0.0)
-        
-        # Apply Reflection to D-residues (chirality=1)
-        # if hard_constraints:
-             # Reverted: The global coordinate reflection (below) was incorrect as it mirrored the translation (position) too.
-             # We rely on the rotmat reflection above.
-             # pass
-        
+
         mask15 = get_heavyatom_mask(aa)
         return pos15, mask15
 
@@ -651,12 +629,21 @@ class UniChiFlowModel(nn.Module):
             t = torch.full((B, 1), (k + 1) / float(num_steps), device=device)
             pred = self.predict_x1(batch, t, seq, trans, rot, ang)
 
-            # update peptide only
             pep = gen_mask & res_mask
             if pep.any():
-                trans_new = (1 - dt) * trans + dt * pred['pred_trans_1']
-                rot_new = so3.geodesic_t(torch.full((B, 1, 1), dt, device=device), pred['pred_rot_1'], rot)
-                ang_new = torus.tor_geodesic_t(torch.full((B, 1, 1), dt, device=device), pred['pred_ang_1'], ang)
+                dt_val = 1.0 - t.clamp(min=1e-6)
+                dt_val = dt_val.unsqueeze(-1)
+
+                v_trans = (pred['pred_trans_1'] - trans) / dt_val
+
+                trans_new = trans + v_trans * dt
+                rot_delta = so3.relative_rotation(rot, pred['pred_rot_1'])
+                v_rot = so3.log_map(rot_delta) / dt_val
+                rot_new = so3.exp_map(v_rot * dt).matmul(rot)
+
+                ang_delta = torus.tor_logmap(ang, pred['pred_ang_1'])
+                v_ang = ang_delta / dt_val
+                ang_new = torus.tor_expmap(v_ang * dt, ang)
 
                 trans = torch.where(pep[..., None], trans_new, trans)
                 rot = torch.where(pep[..., None, None], rot_new, rot)
