@@ -32,7 +32,7 @@ model:
   aatype_vocab: 21
 
 flow:
-  sigma_trans: 1.0
+  sigma_trans: 0.1
   num_steps: 30
   angle_purify: true
   use_ot: true

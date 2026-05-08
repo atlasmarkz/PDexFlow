@@ -94,7 +94,10 @@ def main(cfg: DictConfig):
 
     optim = build_optimizer(model, cfg, trainable_only=False)
     use_amp = device.startswith("cuda") and bool(cfg.train.get("use_amp", True))
-    scaler = amp.GradScaler(enabled=use_amp, device="cuda")
+    # autocast device_type and GradScaler device must match the actual training
+    # device so CPU/MPS smoke runs don't fail at construction time.
+    amp_device = "cuda" if device.startswith("cuda") else "cpu"
+    scaler = amp.GradScaler(enabled=use_amp, device=amp_device)
 
     grad_accum_steps = int(cfg.train.get("grad_accum_steps", 1))
     grad_accum_steps = max(1, grad_accum_steps)
@@ -168,7 +171,7 @@ def main(cfg: DictConfig):
 
         current_sym_weight = get_sym_weight(step)
 
-        with amp.autocast(device_type="cuda", enabled=use_amp):
+        with amp.autocast(device_type=amp_device, enabled=use_amp):
             loss_dict = model(batch, sym_weight_override=current_sym_weight)
             loss = loss_dict['loss'] / float(grad_accum_steps)
 

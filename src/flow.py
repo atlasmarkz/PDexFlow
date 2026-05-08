@@ -19,7 +19,13 @@ def safe_norm(x: torch.Tensor, dim: int = -1, keepdim: bool = False, eps: float 
 
 
 def parity_positions(x: torch.Tensor) -> torch.Tensor:
-	return -x
+	# XY-flip (diag(-1, -1, +1)) — matches the dataset mirror at
+	# `pepmerge_dataset.py` (`pos * [-1,-1,1]`) and the Hard Decoder's
+	# `R @ diag(-1,-1,1)`. Previously this was `-x` (full inversion), which meant
+	# the sym-loss target was a different parity than the D-peptide data/decoder
+	# actually used, so the D branch learned a mismatched mapping.
+	flip = torch.tensor([-1.0, -1.0, 1.0], device=x.device, dtype=x.dtype)
+	return x * flip
 
 
 def parity_rotations(R: torch.Tensor) -> torch.Tensor:

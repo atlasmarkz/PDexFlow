@@ -52,6 +52,8 @@ logs/
 
 # Local config overrides (keep .example.yaml tracked)
 config.yaml
+configs/*.yaml
+!configs/*.example.yaml
 
 # PDB data files (raw structure data)
 *.pdb

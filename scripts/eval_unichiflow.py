@@ -22,9 +22,40 @@ from src.data.pep_dataloader import PaddingCollate, PepDataset
 from src.data.writers import save_pdb
 from src.analysis.metrics import aar_accuracy, chirality_error, kabsch_rmsd
 from src.models.chiralformer import UniChiFlowModel
+from src.experiments.components import resolve_inference_device
 
 config_path = os.path.abspath("configs")
 config_name = "unichiflow_eval.yaml"
+
+
+def _device_sync(device: str):
+    """Barrier + wait-for-kernels across cuda/mps/cpu. No-op on cpu."""
+    if device.startswith("cuda"):
+        torch.cuda.synchronize(device=torch.device(device))
+    elif device == "mps":
+        # torch.mps.synchronize exists since ~2.1; guard for older wheels.
+        sync = getattr(getattr(torch, "mps", None), "synchronize", None)
+        if sync is not None:
+            sync()
+
+
+def _device_reset_peak_mem(device: str):
+    if device.startswith("cuda"):
+        torch.cuda.reset_peak_memory_stats(device=torch.device(device))
+    # mps has no peak-reset API; per-step current_allocated_memory still works.
+
+
+def _device_peak_mem_mb(device: str) -> float:
+    if device.startswith("cuda"):
+        return float(torch.cuda.max_memory_allocated(device=torch.device(device))) / (1024.0 * 1024.0)
+    if device == "mps":
+        cur = getattr(getattr(torch, "mps", None), "current_allocated_memory", None)
+        if cur is not None:
+            # MPS has no "peak since reset"; this is instantaneous usage at
+            # read time, which for a blocking single-sample eval is a
+            # reasonable proxy.
+            return float(cur()) / (1024.0 * 1024.0)
+    return float("nan")
 
 
 def _select_masked(x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -311,9 +342,12 @@ def _write_csv(path: str, rows: List[Dict[str, object]], fieldnames: List[str]):
 def main(cfg: DictConfig):
     du.seed_all(int(cfg.train.seed))
 
-    device = str(cfg.sample.device if "sample" in cfg else cfg.train.device)
-    if device.startswith("cuda") and not torch.cuda.is_available():
-        device = "cpu"
+    requested_device = str(cfg.sample.device if "sample" in cfg else cfg.train.device)
+    device = resolve_inference_device(requested_device)
+    if device != requested_device:
+        print(f"[device] requested={requested_device} -> resolved={device} (auto fallback)")
+    else:
+        print(f"[device] {device}")
 
     ds_eval = PepDataset(
         structure_dir=str(cfg.data.structure_dir),
@@ -380,9 +414,8 @@ def main(cfg: DictConfig):
         batch["chirality"] = batch.get("chirality", batch.get("chirality_token", torch.zeros((len(data_list),), dtype=torch.long)))
         batch = du.recursive_to(batch, device)
 
-        if device.startswith("cuda"):
-            torch.cuda.reset_peak_memory_stats(device=torch.device(device))
-            torch.cuda.synchronize(device=torch.device(device))
+        _device_reset_peak_mem(device)
+        _device_sync(device)
         tic = time.perf_counter()
 
         with torch.no_grad():
@@ -397,12 +430,9 @@ def main(cfg: DictConfig):
                 hard_constraints=hard_decoder,
             )
 
-        if device.startswith("cuda"):
-            torch.cuda.synchronize(device=torch.device(device))
+        _device_sync(device)
         latency_ms = (time.perf_counter() - tic) * 1000.0
-        peak_mem_mb = float("nan")
-        if device.startswith("cuda"):
-            peak_mem_mb = float(torch.cuda.max_memory_allocated(device=torch.device(device))) / (1024.0 * 1024.0)
+        peak_mem_mb = _device_peak_mem_mb(device)
 
         pep_mask = batch["generate_mask"].bool() & batch["res_mask"].bool()
         aa_mask = pep_mask

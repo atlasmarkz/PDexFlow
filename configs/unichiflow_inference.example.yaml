@@ -25,7 +25,7 @@ model:
   angle_dim: 5
 
 flow:
-  sigma_trans: 0.3
+  sigma_trans: 0.1
   angle_purify: true
   use_ot: true
   auto_loss_weighting: true

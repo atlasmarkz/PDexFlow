@@ -36,7 +36,7 @@ model:
 
 flow:
   sigma_min: 0.0001
-  sigma_trans: 0.5
+  sigma_trans: 0.1
   cfm_weight: 1
   sym_weight: 1
   seq_weight: 1

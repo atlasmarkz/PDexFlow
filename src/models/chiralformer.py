@@ -29,15 +29,23 @@ def rot6d_to_rotmat(x: torch.Tensor) -> torch.Tensor:
     # (...,6) -> (...,3,3) via Gram-Schmidt
     a1 = x[..., 0:3]
     a2 = x[..., 3:6]
-    b1 = F.normalize(a1, dim=-1)
-    b2 = F.normalize(a2 - (b1 * a2).sum(dim=-1, keepdim=True) * b1, dim=-1)
+    # eps=1e-6 (not the default 1e-12): under fp16/AMP the head can emit near-zero
+    # 6D vectors early in training, which F.normalize then turns into NaN when the
+    # default eps underflows. Matches the Gram–Schmidt guard used in PFF.
+    b1 = F.normalize(a1, dim=-1, eps=1e-6)
+    b2 = F.normalize(a2 - (b1 * a2).sum(dim=-1, keepdim=True) * b1, dim=-1, eps=1e-6)
     b3 = torch.cross(b1, b2, dim=-1)
     return torch.stack([b1, b2, b3], dim=-1)
 
 
 @dataclass
 class FlowConfig:
-    sigma_trans: float = 1.0
+    # sigma_trans=0.1 matches the scale of data-side trans_1 after coord_scale=0.1
+    # (typical CA coordinates within a peptide are ~tens of Å → single-digit units
+    # after the scale). A unit-std prior swamps the signal at small t and pushes
+    # OT cost to pick up a spurious batch translation. PFF/dflow use the same 0.1
+    # scale after their coord normalization.
+    sigma_trans: float = 0.1
     cfm_weight: float = 1.0
     sym_weight: float = 1.0
     seq_weight: float = 1.0
@@ -167,7 +175,7 @@ class UniChiFlowModel(nn.Module):
     """
 
     def __init__(self, d_model: int = 256, n_layers: int = 6, n_heads: int = 8, dropout: float = 0.1, max_len: int = 512, aatype_vocab: int = 21,
-                 sigma_trans: float = 1.0, chi_lora: Optional[Dict] = None, esm: Optional[Dict] = None, cfm_weight: float = 1.0, sym_weight: float = 1.0,
+                 sigma_trans: float = 0.1, chi_lora: Optional[Dict] = None, esm: Optional[Dict] = None, cfm_weight: float = 1.0, sym_weight: float = 1.0,
                  seq_weight: float = 1.0, angle_dim: int = 5, use_ot: bool = True,
                  cfm_w_trans: float = 1.0, cfm_w_rot: float = 1.0, cfm_w_ang: float = 1.0,
                  coord_scale: float = 0.1):
@@ -320,6 +328,26 @@ class UniChiFlowModel(nn.Module):
         q = torch.randn(*shape, 4, device=device, dtype=dtype)
         return F.normalize(q, dim=-1)
 
+    @staticmethod
+    def _center_noise_on_pep(trans_noise: torch.Tensor, pep_mask: torch.Tensor) -> torch.Tensor:
+        """Zero-mean translational noise over peptide residues.
+
+        PFF / dflow both initialize the flow from a batch-centered Gaussian — otherwise
+        a random noise batch has a non-zero CoM, so the OT cost picks up a global
+        translation bias and flow lines are no longer straight. We apply the same
+        centering but scoped to the peptide mask (receptor positions don't care,
+        but we also don't want their random noise to pollute the mean).
+
+        pep_mask: (B,L) bool; trans_noise: (B,L,3). Returns (B,L,3) with the
+        peptide-region mean subtracted from all peptide positions. Non-peptide
+        positions are returned unchanged (they will be overwritten by receptor
+        coords downstream anyway, but we keep the tensor shape clean).
+        """
+        mask_f = pep_mask.to(trans_noise.dtype).unsqueeze(-1)            # (B,L,1)
+        denom = mask_f.sum(dim=1, keepdim=True).clamp(min=1.0)            # (B,1,1)
+        mean = (trans_noise * mask_f).sum(dim=1, keepdim=True) / denom    # (B,1,3)
+        return trans_noise - mean * mask_f
+
     def corrupt_batch(self, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Create interpolants and endpoints for PH-Flow with optional minibatch OT alignment."""
         aa_1 = batch['aa']
@@ -345,6 +373,11 @@ class UniChiFlowModel(nn.Module):
         ang_0 = torus.tor_random_uniform(B, L, ang_1.shape[-1], device=device, dtype=ang_1.dtype)
 
         pep_mask = gen_mask & res_mask
+        # Zero-mean noise on peptide residues (PFF-style _centered_gaussian). Done
+        # before OT: permutation is mean-invariant, so either order works, but
+        # centering first keeps the pairwise_cost diagonal tight.
+        if pep_mask.any():
+            trans_0 = self._center_noise_on_pep(trans_0, pep_mask)
         if self.flow_cfg.use_ot and pep_mask.any():
             # OT aligns noisy samples to data within peptide residues, improving straightness of flow lines.
             for b in range(B):
@@ -660,20 +693,29 @@ class UniChiFlowModel(nn.Module):
         ang_1 = batch['torsion_angle']
 
         # init state at t=0
-        trans = torch.where(gen_mask[..., None], torch.randn((B, L, 3), device=device) * self.flow_cfg.sigma_trans, trans_1)
+        # Same zero-mean noise as corrupt_batch: sampling from an un-centered prior
+        # would start the flow from a structure whose CoM is translated relative to
+        # the receptor, and the model (trained on centered noise) has never seen
+        # that input distribution.
+        pep_for_init = gen_mask & res_mask
+        init_trans_noise = torch.randn((B, L, 3), device=device) * self.flow_cfg.sigma_trans
+        if pep_for_init.any():
+            init_trans_noise = self._center_noise_on_pep(init_trans_noise, pep_for_init)
+        trans = torch.where(gen_mask[..., None], init_trans_noise, trans_1)
         rot = torch.where(gen_mask[..., None, None], so3.quat_to_rotmat(self._random_quat((B, L), device=device, dtype=trans.dtype)), rot_1)
         ang = torch.where(gen_mask[..., None], torus.tor_random_uniform(B, L, ang_1.shape[-1], device=device, dtype=ang_1.dtype), ang_1)
         seq = torch.where(gen_mask, torch.full_like(aa_gt, du.MASK_TOKEN_INDEX), aa_gt)
         seq = torch.where(res_mask, seq, torch.full_like(seq, du.MASK_TOKEN_INDEX))
 
-        # Discretize t in [0, 1] over num_steps+1 points: t_k = k/num_steps.
-        # At step k we move from t_k to t_{k+1}; the x1-interpolation form
-        #   x_{k+1} = (1-alpha) x_k + alpha * pred_x1,    alpha = dt / (1 - t_k)
-        # is mathematically equivalent to the velocity-field integration
-        #   x_{k+1} = x_k + (pred_x1 - x_k) / (1 - t_k) * dt
-        # but avoids the explicit 1/(1-t) blow-up at t -> 1 (alpha saturates to 1 in the limit).
+        # t-schedule now lives in the training distribution [min_t, 1]. Old code
+        # started at t_k=0, which is outside corrupt_batch's training range
+        # (t ∈ [0.05, 0.95]); the very first predict_x1 call was therefore an OOD
+        # extrapolation and the trajectory started off the learned manifold.
+        # PFF/dflow both use linspace(min_t, 1, num_steps+1). We reproduce that.
+        min_t = float(getattr(self.flow_cfg, 'sample_min_t', 0.05))
+        dt = (1.0 - min_t) / float(num_steps)
         for k in range(num_steps):
-            t_k = k / float(num_steps)
+            t_k = min_t + dt * k
             t = torch.full((B, 1), t_k, device=device)
             pred = self.predict_x1(batch, t, seq, trans, rot, ang)
 
@@ -681,7 +723,7 @@ class UniChiFlowModel(nn.Module):
             if pep.any():
                 remaining = 1.0 - t_k
                 # last step: alpha = 1 (land exactly on prediction); otherwise alpha = dt / (1 - t_k).
-                alpha = 1.0 if k == num_steps - 1 else min(1.0, (1.0 / float(num_steps)) / max(remaining, 1e-6))
+                alpha = 1.0 if k == num_steps - 1 else min(1.0, dt / max(remaining, 1e-6))
                 alpha_t = torch.tensor(alpha, device=device, dtype=trans.dtype)
 
                 trans_new = trans + alpha_t * (pred['pred_trans_1'] - trans)
@@ -692,8 +734,21 @@ class UniChiFlowModel(nn.Module):
                 rot = torch.where(pep[..., None, None], rot_new, rot)
                 ang = torch.where(pep[..., None], ang_new, ang)
 
+                # Sequence update follows the training MASK-schedule: at time t_k
+                # the training corruption keeps a fraction (1-t_k) of peptide
+                # residues MASK'd, so we only "commit" predicted residues where
+                # rand < t_k, leaving the rest as MASK for the next forward to
+                # re-predict. The old code argmax-committed every position every
+                # step, which (a) forced the model to condition on hard one-hot
+                # tokens it never saw during training, and (b) let low-confidence
+                # early predictions lock the rest of the trajectory. Final step
+                # commits everything so the returned seq is fully decoded.
                 seq_pred = torch.argmax(pred['pred_seq_logits'], dim=-1)
-                seq = torch.where(pep, seq_pred, seq)
+                if k == num_steps - 1:
+                    seq = torch.where(pep, seq_pred, seq)
+                else:
+                    commit = (torch.rand(pep.shape, device=device) < t_k) & pep
+                    seq = torch.where(commit, seq_pred, seq)
 
             if angle_purify:
                 ang = ang % (2 * math.pi)

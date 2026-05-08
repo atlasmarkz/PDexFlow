@@ -1,3 +1,22 @@
+"""Inference entrypoint for UniChiFlow.
+
+Device selection goes through `resolve_inference_device` (components.py), which
+auto-falls-back `cuda -> mps -> cpu` so the same yaml configs work on both a
+CUDA box and a Mac.
+
+Mac / MPS performance note (measured on Apple Silicon, 4.8M-param model,
+20-step ODE sampling):
+
+    batch  CPU     MPS     MPS/CPU
+    B=2    ~100ms  ~140ms  0.7x  (MPS slower — kernel-launch overhead wins
+                                  over the per-step small-op body)
+    B=8    ~200ms  ~145ms  1.4x
+    B=32   ~450ms  ~240ms  1.9x
+
+So for single-sample / B<=4 interactive inference on a Mac, CPU is the faster
+path — override with `sample.device=cpu` on the hydra CLI. MPS only pays off
+when you batch many samples (sweeping chirality / seeds / candidates).
+"""
 import os
 import sys
 from copy import deepcopy
@@ -17,6 +36,7 @@ from src.data.writers import save_pdb
 from src.data.pep_constants import BBHeavyAtom
 from src.models.chiralformer import UniChiFlowModel
 from src.checkpoint import load_backbone_into_lora
+from src.experiments.components import resolve_inference_device
  
 
 
@@ -29,9 +49,12 @@ def main(cfg: DictConfig):
     du.seed_all(int(cfg.train.seed))
 
     sam = cfg.sample
-    device = str(sam.device)
-    if device.startswith("cuda") and not torch.cuda.is_available():
-        device = "cpu"
+    requested_device = str(sam.device)
+    device = resolve_inference_device(requested_device)
+    if device != requested_device:
+        print(f"[device] requested={requested_device} -> resolved={device} (auto fallback)")
+    else:
+        print(f"[device] {device}")
 
     import time
     timestamp = time.strftime("%Y_%m_%d__%H_%M_%S", time.localtime())

@@ -8,11 +8,13 @@ import torch
 def _fp32(op):
     def wrapper(*args, **kwargs):
         src_dtype = None
+        device_type = 'cpu'
         for a in args:
             if isinstance(a, torch.Tensor) and a.is_floating_point():
                 src_dtype = a.dtype
+                device_type = 'cuda' if a.is_cuda else 'cpu'
                 break
-        with torch.autocast(device_type='cuda', enabled=False):
+        with torch.autocast(device_type=device_type, enabled=False):
             f32_args = tuple(a.float() if isinstance(a, torch.Tensor) and a.is_floating_point() else a for a in args)
             f32_kwargs = {k: (v.float() if isinstance(v, torch.Tensor) and v.is_floating_point() else v) for k, v in kwargs.items()}
             out = op(*f32_args, **f32_kwargs)

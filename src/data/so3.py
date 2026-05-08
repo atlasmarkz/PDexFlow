@@ -9,11 +9,15 @@ import torch
 def _fp32(op):
     def wrapper(*args, **kwargs):
         src_dtype = None
+        device_type = 'cpu'
         for a in args:
             if isinstance(a, torch.Tensor) and a.is_floating_point():
                 src_dtype = a.dtype
+                # Pick autocast device_type from the actual tensor so the wrapper
+                # works on CPU-only machines (Mac/CI smoke tests) without a CUDA build.
+                device_type = 'cuda' if a.is_cuda else 'cpu'
                 break
-        with torch.autocast(device_type='cuda', enabled=False):
+        with torch.autocast(device_type=device_type, enabled=False):
             f32_args = tuple(a.float() if isinstance(a, torch.Tensor) and a.is_floating_point() else a for a in args)
             f32_kwargs = {k: (v.float() if isinstance(v, torch.Tensor) and v.is_floating_point() else v) for k, v in kwargs.items()}
             out = op(*f32_args, **f32_kwargs)
@@ -165,7 +169,18 @@ def exp_map(omega: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
 
 @_fp32
 def log_map(R: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
-    """Logarithm map on SO(3): rotation matrix -> axis-angle vector."""
+    """Logarithm map on SO(3): rotation matrix -> axis-angle vector.
+
+    Three branches:
+      - θ very small: first-order Taylor (skew/2 already has the right magnitude)
+      - θ in the open interval: standard `skew * θ / sin(θ)` formula
+      - θ near π: skew degenerates (R ≈ R^T so the skew-symmetric part vanishes);
+        recover the axis from the diagonal of (R+I)/2 = n nᵀ and lift sign from
+        the off-diagonals. This matches PFF's 3-branch rotmat_to_rotvec; without
+        it a relative rotation between a random noise frame and a data frame can
+        fall into θ ≈ π where the old code silently returned 0, corrupting
+        delta_rot and cfm_loss.
+    """
     trace = R[..., 0, 0] + R[..., 1, 1] + R[..., 2, 2]
     cos_theta = ((trace - 1) * 0.5).clamp(min=-1.0, max=1.0)
     theta = torch.acos(cos_theta)
@@ -173,11 +188,37 @@ def log_map(R: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     skew = 0.5 * (R - R.transpose(-1, -2))
     omega = _vee(skew)
     scale = theta / sin_theta
-    omega = omega * scale[..., None]
-    # Use first-order approximation for very small angles
-    mask = (theta < 1e-4).float()[..., None]
-    omega = omega * (1 - mask) + omega * 0.5 * theta[..., None] * mask
-    return omega
+    omega_std = omega * scale[..., None]
+
+    # π branch: (R + I)/2 ≈ n nᵀ when θ=π (I is identity). Extract axis components
+    # from the diagonal; recover relative signs from off-diagonals (R + R^T)/2.
+    diag = torch.stack([R[..., 0, 0], R[..., 1, 1], R[..., 2, 2]], dim=-1)
+    axis_sq = ((diag + 1.0) * 0.5).clamp(min=0.0)
+    axis_pi = torch.sqrt(axis_sq + eps)
+    # Pin the largest component to +; the other two inherit sign from R+R^T off-diag.
+    main_idx = torch.argmax(axis_sq, dim=-1, keepdim=True)
+    sym = 0.5 * (R + R.transpose(-1, -2))
+    # Signs relative to the main axis: n_i * n_j = sym[i,j] when θ=π.
+    row01 = sym[..., 0, 1]
+    row02 = sym[..., 0, 2]
+    row12 = sym[..., 1, 2]
+    sign_if_main_is_0 = torch.stack([torch.ones_like(row01), torch.sign(row01), torch.sign(row02)], dim=-1)
+    sign_if_main_is_1 = torch.stack([torch.sign(row01), torch.ones_like(row01), torch.sign(row12)], dim=-1)
+    sign_if_main_is_2 = torch.stack([torch.sign(row02), torch.sign(row12), torch.ones_like(row01)], dim=-1)
+    signs = torch.where(
+        main_idx == 0, sign_if_main_is_0,
+        torch.where(main_idx == 1, sign_if_main_is_1, sign_if_main_is_2),
+    )
+    # sign(0) is 0 which would zero out the axis — replace zeros with +1.
+    signs = torch.where(signs == 0, torch.ones_like(signs), signs)
+    omega_pi = axis_pi * signs * theta[..., None]
+
+    # Taylor-small branch (cheap; applies when θ < 1e-4).
+    small = (theta < 1e-4).float()[..., None]
+    near_pi = (theta > math.pi - 1e-2).float()[..., None]
+    regular = (1.0 - small) * (1.0 - near_pi)
+    omega_small = omega * 0.5 * theta[..., None]
+    return small * omega_small + regular * omega_std + near_pi * omega_pi
 
 
 @_fp32

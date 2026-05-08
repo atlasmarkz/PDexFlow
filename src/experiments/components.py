@@ -136,3 +136,49 @@ def load_initial_weights(model: UniChiFlowModel, cfg: DictConfig, device: str) -
     print(f"Loading pre-trained backbone from {ckpt_path}...")
     ckpt = torch.load(str(ckpt_path), map_location=device, weights_only=False)
     return load_backbone_into_lora(model, ckpt['model'])
+
+
+def _mps_available() -> bool:
+    mps = getattr(torch.backends, "mps", None)
+    return bool(mps is not None and mps.is_available() and mps.is_built())
+
+
+def resolve_inference_device(cfg_device: str) -> str:
+    """Pick the best available backend for *inference / eval only*.
+
+    Unlike training (where MPS is deliberately out of scope — see the Mac
+    discussion), inference is a good fit for MPS: the sampler is pure
+    forward, no GradScaler, no scipy-backed OT, and 20-step ODE sampling
+    is the thing that actually benefits from a GPU on Apple Silicon.
+
+    Rules:
+      - `cpu`           → cpu (explicit override, respected)
+      - `mps`           → mps if available, else cpu
+      - `auto`          → cuda → mps → cpu
+      - `cuda`/`cuda:N` → cuda if available; otherwise auto-fall-back to
+                          mps (if available), then cpu. This lets the same
+                          yaml configs (`device: cuda`) work on a Mac.
+
+    Returns the resolved device string. Caller is expected to log both the
+    requested and resolved value so silent fallbacks are visible.
+    """
+    req = str(cfg_device).lower().strip()
+    cuda_ok = torch.cuda.is_available()
+    mps_ok = _mps_available()
+    if req == "cpu":
+        return "cpu"
+    if req == "mps":
+        return "mps" if mps_ok else "cpu"
+    if req == "auto":
+        if cuda_ok:
+            return "cuda"
+        if mps_ok:
+            return "mps"
+        return "cpu"
+    if req.startswith("cuda"):
+        if cuda_ok:
+            return req
+        if mps_ok:
+            return "mps"
+        return "cpu"
+    return "cpu"
