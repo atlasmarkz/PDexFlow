@@ -6,27 +6,33 @@ import torch
 from omegaconf import DictConfig
 from torch import amp
 from torch.nn.utils import clip_grad_norm_
-from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from src.data.pep_dataloader import PaddingCollate, TwinUniversePepDataset
-from src.data.pepmerge_dataset import PepMergeSubsetDataset
 from src.data import utils as du
-from src.models.chiralformer import UniChiFlowModel
+from src.experiments.components import (
+    build_dataloader,
+    build_dataset,
+    build_model,
+    build_optimizer,
+    inf_iterator,
+)
 
 
 config_path = os.path.abspath("configs")
 config_name = "unichiflow_backbone.yaml"
 
 
-def _inf_iterator(loader):
-    while True:
-        for batch in loader:
-            yield batch
+class BestCheckpointKeeper:
+    """Tracks the best-so-far smoothed loss and writes a single `best_model.pt`.
 
-
-class EarlyStopping:
+    Originally named `EarlyStopping`, but in practice `patience` is set so high
+    (>= max_iters) that the stop branch never fires — the class is really a
+    "keep-the-best-checkpoint-seen" helper. Renamed so callers don't assume
+    training can actually terminate from here. If the patience counter is ever
+    exceeded the flag is still set, but the training loop treats that as a hint,
+    not a hard stop.
+    """
     def __init__(self, patience=1000, min_delta=0.0, path='checkpoint.pt', verbose=False):
         self.patience = patience
         self.min_delta = min_delta
@@ -43,7 +49,7 @@ class EarlyStopping:
         elif val_loss > self.best_loss - self.min_delta:
             self.counter += 1
             if self.verbose and self.counter % 100 == 0:
-                print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+                print(f'BestCheckpointKeeper: no improvement for {self.counter}/{self.patience} steps')
             if self.counter >= self.patience:
                 self.early_stop = True
         else:
@@ -80,49 +86,13 @@ def main(cfg: DictConfig):
     ckpt_dir = os.path.join(out_dir, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
 
-    use_subset = bool(cfg.data.get("use_subset", False))
-    if use_subset:
-        fraction = float(cfg.data.get("subset_fraction", 0.3))
-        mirror_prob = float(cfg.data.get("subset_mirror_prob", 1.0))
-        ds = PepMergeSubsetDataset(
-            structure_dir=str(cfg.data.structure_dir),
-            cache_dir=str(cfg.data.cache_dir),
-            name=f"pepmerge_subset_{fraction}",
-            reset=bool(cfg.data.reset_cache),
-            fraction=fraction,
-            mirror_prob=mirror_prob,
-        )
-    else:
-        ds = TwinUniversePepDataset(
-            structure_dir=str(cfg.data.structure_dir),
-            cache_dir=str(cfg.data.cache_dir),
-            split_name=f"pepmerge_{cfg.data.split}",
-            mirror_prob=float(cfg.data.twin_universe_prob),
-            reset=bool(cfg.data.reset_cache),
-            deterministic_pairs=bool(cfg.data.get("deterministic_pairs", False)),
-        )
-    loader = DataLoader(ds, batch_size=int(cfg.train.batch_size), shuffle=True, num_workers=int(cfg.train.num_workers),
-                        collate_fn=PaddingCollate(eight=True), pin_memory=True)
-    it = _inf_iterator(loader)
+    ds = build_dataset(cfg, kind="pepmerge")
+    loader = build_dataloader(ds, cfg, eight=True)
+    it = inf_iterator(loader)
 
-    model = UniChiFlowModel(
-        d_model=int(cfg.model.d_model),
-        n_layers=int(cfg.model.n_layers),
-        n_heads=int(cfg.model.n_heads),
-        dropout=float(cfg.model.dropout),
-        max_len=int(cfg.model.max_len),
-        aatype_vocab=int(cfg.model.aatype_vocab),
-        sigma_trans=float(cfg.flow.sigma_trans),
-        chi_lora=cfg.get("chi_lora"),
-        esm=cfg.get("esm"),
-        cfm_weight=float(cfg.flow.get("cfm_weight", 1.0)),
-        sym_weight=float(cfg.flow.get("sym_weight", 1.0)),
-        seq_weight=float(cfg.flow.get("seq_weight", 1.0)),
-        angle_dim=int(cfg.model.get("angle_dim", 5)),
-        use_ot=bool(cfg.flow.get("use_ot", True)),
-    ).to(device)
+    model = build_model(cfg, include_multitask_weights=True).to(device)
 
-    optim = torch.optim.AdamW(model.parameters(), lr=float(cfg.train.optimizer.lr), weight_decay=float(cfg.train.optimizer.weight_decay))
+    optim = build_optimizer(model, cfg, trainable_only=False)
     use_amp = device.startswith("cuda") and bool(cfg.train.get("use_amp", True))
     scaler = amp.GradScaler(enabled=use_amp, device="cuda")
 
@@ -131,18 +101,32 @@ def main(cfg: DictConfig):
 
     max_grad_value = float(cfg.train.get("max_grad_value", 0.0))
 
-    def _sanitize_gradients(parameters):
-        """Replace NaN/Inf grads and optionally clip by value before norm clipping."""
+    def _check_and_clip_gradients(parameters):
+        """Fail-loud NaN/Inf detection. Returns True if gradients are finite and safe to step.
+
+        Previous behavior silently replaced NaN/Inf with 0, which hid genuine numerical
+        failures (the next forward would diverge again on the same inputs). Now we detect
+        any non-finite grad, log it, and tell the caller to skip the opt step — the
+        surrounding loop already has bad_step counter + LR decay plumbing.
+        """
+        has_bad = False
         for p in parameters:
             if p.grad is None:
                 continue
-            torch.nan_to_num_(p.grad, nan=0.0, posinf=0.0, neginf=0.0)
-            if max_grad_value > 0:
-                p.grad.clamp_(min=-max_grad_value, max=max_grad_value)
+            if not torch.isfinite(p.grad).all():
+                has_bad = True
+                break
+        if has_bad:
+            return False
+        if max_grad_value > 0:
+            for p in parameters:
+                if p.grad is not None:
+                    p.grad.clamp_(min=-max_grad_value, max=max_grad_value)
+        return True
 
-    # Early Stopping setup
+    # Best checkpoint keeper (old name: EarlyStopping — the stop branch almost never fires in practice).
     es_cfg = cfg.train.get('early_stopping', {})
-    early_stopping = EarlyStopping(
+    early_stopping = BestCheckpointKeeper(
         patience=int(es_cfg.get('patience', 10000)),
         min_delta=float(es_cfg.get('min_delta', 0.0)),
         path=os.path.join(ckpt_dir, "best_model.pt"),
@@ -178,10 +162,9 @@ def main(cfg: DictConfig):
 
     for step in pbar:
         batch = du.recursive_to(next(it), device)
-
-        # Normalize coordinates to improve numerical stability (Issue #5)
-        if 'pos_heavyatom' in batch:
-            batch['pos_heavyatom'] = batch['pos_heavyatom'] * 0.1
+        # NOTE: Coordinate scaling (×0.1) is now performed inside UniChiFlowModel
+        # (corrupt_batch / sample) via self.coord_scale. Scripts must pass raw PDB
+        # angstroms in batch['pos_heavyatom']; do NOT pre-scale here.
 
         current_sym_weight = get_sym_weight(step)
 
@@ -213,7 +196,15 @@ def main(cfg: DictConfig):
         grad = None
         if use_amp:
             scaler.unscale_(optim)
-            _sanitize_gradients(model.parameters())
+            if not _check_and_clip_gradients(list(model.parameters())):
+                pbar.set_description("non-finite grad (pre-clip), skipping opt step")
+                optim.zero_grad(set_to_none=True)
+                scaler.update()
+                bad_step += 1
+                if bad_step % 10 == 0:
+                    lr_now = _decay_lr()
+                    pbar.set_description(f"decay lr -> {lr_now:.2e} (grad nan)")
+                continue
             grad = clip_grad_norm_(model.parameters(), float(cfg.train.max_grad_norm))
             if not torch.isfinite(grad):
                 pbar.set_description("non-finite grad, skipping opt step")
@@ -228,7 +219,14 @@ def main(cfg: DictConfig):
             scaler.step(optim)
             scaler.update()
         else:
-            _sanitize_gradients(model.parameters())
+            if not _check_and_clip_gradients(list(model.parameters())):
+                pbar.set_description("non-finite grad (pre-clip), skipping opt step")
+                optim.zero_grad(set_to_none=True)
+                bad_step += 1
+                if bad_step % 10 == 0:
+                    lr_now = _decay_lr()
+                    pbar.set_description(f"decay lr -> {lr_now:.2e} (grad nan)")
+                continue
             grad = clip_grad_norm_(model.parameters(), float(cfg.train.max_grad_norm))
             if not torch.isfinite(grad):
                 pbar.set_description("non-finite grad, skipping opt step")
@@ -268,10 +266,10 @@ def main(cfg: DictConfig):
 
         bad_step = 0  # reset on successful step
 
-        # Check early stopping
+        # Track best checkpoint; honor the stop flag if set (rare in practice).
         early_stopping(smooth_loss, model, cfg, optim, global_step)
         if early_stopping.early_stop:
-            print(f"\nEarly stopping triggered at step {step}. Best smoothed loss: {early_stopping.best_loss:.6f}")
+            print(f"\nBest-loss plateau at step {step}. Best smoothed loss: {early_stopping.best_loss:.6f}")
             break
 
         if step % int(cfg.train.save_freq) == 0:

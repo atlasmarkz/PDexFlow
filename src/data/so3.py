@@ -2,6 +2,33 @@ import math
 import torch
 
 
+# Riemannian ops on SO(3) have 1/sin(theta) / acos / F.normalize that are numerically
+# fragile in fp16. Under AMP autocast these functions can produce inf/NaN long before
+# the final loss sees them. We wrap each primitive to locally disable autocast and
+# compute in fp32, then cast the result back to the caller's dtype.
+def _fp32(op):
+    def wrapper(*args, **kwargs):
+        src_dtype = None
+        for a in args:
+            if isinstance(a, torch.Tensor) and a.is_floating_point():
+                src_dtype = a.dtype
+                break
+        with torch.autocast(device_type='cuda', enabled=False):
+            f32_args = tuple(a.float() if isinstance(a, torch.Tensor) and a.is_floating_point() else a for a in args)
+            f32_kwargs = {k: (v.float() if isinstance(v, torch.Tensor) and v.is_floating_point() else v) for k, v in kwargs.items()}
+            out = op(*f32_args, **f32_kwargs)
+        if src_dtype is not None and src_dtype != torch.float32:
+            if isinstance(out, torch.Tensor):
+                return out.to(src_dtype)
+            if isinstance(out, tuple):
+                return tuple(o.to(src_dtype) if isinstance(o, torch.Tensor) else o for o in out)
+        return out
+    wrapper.__wrapped__ = op
+    wrapper.__name__ = getattr(op, '__name__', 'wrapped')
+    return wrapper
+
+
+@_fp32
 def rotmat_to_quat(R: torch.Tensor) -> torch.Tensor:
     """Convert rotation matrices to quaternions (w,x,y,z). Supports batch (...,3,3)."""
     # Numerically stable branchless conversion
@@ -27,6 +54,7 @@ def rotmat_to_quat(R: torch.Tensor) -> torch.Tensor:
     return torch.nn.functional.normalize(q, dim=-1)
 
 
+@_fp32
 def quat_to_rotmat(q: torch.Tensor) -> torch.Tensor:
     """Quaternion (w,x,y,z) -> rotation matrix. q shape (...,4)."""
     q = torch.nn.functional.normalize(q, dim=-1)
@@ -63,6 +91,7 @@ def quat_to_rotmat(q: torch.Tensor) -> torch.Tensor:
     ], dim=-2)
 
 
+@_fp32
 def slerp(q0: torch.Tensor, q1: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
     """Quaternion slerp between q0 and q1. t broadcastable to (...,1)."""
     q0 = torch.nn.functional.normalize(q0, dim=-1)
@@ -88,6 +117,7 @@ def slerp(q0: torch.Tensor, q1: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
     return torch.where(close, lerp, out)
 
 
+@_fp32
 def geodesic_t(t: torch.Tensor, R1: torch.Tensor, R0: torch.Tensor) -> torch.Tensor:
     """Interpolate from R0 to R1 at time t in [0,1]."""
     q0 = rotmat_to_quat(R0)
@@ -117,6 +147,7 @@ def relative_rotation(R_from: torch.Tensor, R_to: torch.Tensor) -> torch.Tensor:
     return torch.matmul(R_from.transpose(-1, -2), R_to)
 
 
+@_fp32
 def exp_map(omega: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     """Rodrigues' formula for Exp: axis-angle (omega) -> rotation matrix."""
     theta = torch.linalg.norm(omega, dim=-1, keepdim=True).clamp(min=eps)
@@ -132,6 +163,7 @@ def exp_map(omega: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     return I + sin_term * K + cos_term * torch.matmul(K, K)
 
 
+@_fp32
 def log_map(R: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     """Logarithm map on SO(3): rotation matrix -> axis-angle vector."""
     trace = R[..., 0, 0] + R[..., 1, 1] + R[..., 2, 2]
@@ -148,6 +180,7 @@ def log_map(R: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     return omega
 
 
+@_fp32
 def geodesic_distance(R1: torch.Tensor, R2: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     """Riemannian geodesic distance between two rotation matrices."""
     rel = relative_rotation(R1, R2)

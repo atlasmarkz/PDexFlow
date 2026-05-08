@@ -1,0 +1,138 @@
+"""Shared builders for UniChiFlow training scripts.
+
+Step 2 of the Trainer refactor roadmap: extract the setup-phase construction
+(dataset, dataloader, model, optimizer, checkpoint load) so the two trainers
+(`train_unichiflow.py`, `train_lora_real_d.py`) call into identical factories.
+
+No behavior change. Each function reproduces the exact construction the inline
+code used to perform — pre-existing inconsistencies between the two scripts
+(e.g. backbone passes cfm_weight/sym_weight, LoRA does not) are preserved
+here via explicit flags so they can be unified later in a dedicated pass.
+"""
+from typing import Literal
+
+import torch
+from omegaconf import DictConfig
+from torch.utils.data import DataLoader, Dataset
+
+from src.checkpoint import load_backbone_into_lora
+from src.data.pep_dataloader import PaddingCollate, TwinUniversePepDataset
+from src.data.pepmerge_dataset import PepMergeSubsetDataset
+from src.data.real_d_pep_dataset import RealDPepDataset
+from src.models.chiralformer import UniChiFlowModel
+
+
+DatasetKind = Literal["pepmerge", "real_d"]
+
+
+def build_dataset(cfg: DictConfig, kind: DatasetKind) -> Dataset:
+    """Build the training dataset.
+
+    Kind is supplied by the caller rather than inferred from cfg so the
+    existing yaml configs don't need a new field. Step 4 (config schema
+    unification) will revisit this.
+    """
+    if kind == "pepmerge":
+        use_subset = bool(cfg.data.get("use_subset", False))
+        if use_subset:
+            fraction = float(cfg.data.get("subset_fraction", 0.3))
+            mirror_prob = float(cfg.data.get("subset_mirror_prob", 1.0))
+            return PepMergeSubsetDataset(
+                structure_dir=str(cfg.data.structure_dir),
+                cache_dir=str(cfg.data.cache_dir),
+                name=f"pepmerge_subset_{fraction}",
+                reset=bool(cfg.data.reset_cache),
+                fraction=fraction,
+                mirror_prob=mirror_prob,
+            )
+        return TwinUniversePepDataset(
+            structure_dir=str(cfg.data.structure_dir),
+            cache_dir=str(cfg.data.cache_dir),
+            split_name=f"pepmerge_{cfg.data.split}",
+            mirror_prob=float(cfg.data.twin_universe_prob),
+            reset=bool(cfg.data.reset_cache),
+            deterministic_pairs=bool(cfg.data.get("deterministic_pairs", False)),
+        )
+    if kind == "real_d":
+        return RealDPepDataset(
+            structure_dir=str(cfg.data.structure_dir),
+            cache_dir=str(cfg.data.cache_dir),
+            name=f"real_d_{cfg.data.split}",
+            reset=bool(cfg.data.reset_cache),
+        )
+    raise ValueError(f"Unknown dataset kind: {kind!r}")
+
+
+def build_dataloader(ds: Dataset, cfg: DictConfig, *, eight: bool = True) -> DataLoader:
+    return DataLoader(
+        ds,
+        batch_size=int(cfg.train.batch_size),
+        shuffle=True,
+        num_workers=int(cfg.train.num_workers),
+        collate_fn=PaddingCollate(eight=eight),
+        pin_memory=True,
+    )
+
+
+def inf_iterator(loader: DataLoader):
+    """Infinitely cycle a DataLoader. Shared helper — was duplicated in both scripts."""
+    while True:
+        for batch in loader:
+            yield batch
+
+
+def build_model(cfg: DictConfig, *, include_multitask_weights: bool) -> UniChiFlowModel:
+    """Construct UniChiFlowModel from cfg.
+
+    `include_multitask_weights` flag preserves the pre-existing asymmetry:
+    the backbone trainer wires cfm_weight/sym_weight through, the LoRA
+    trainer relies on the model defaults. Step 4 will unify the config
+    schema; until then we faithfully reproduce both call shapes.
+    """
+    kwargs = dict(
+        d_model=int(cfg.model.d_model),
+        n_layers=int(cfg.model.n_layers),
+        n_heads=int(cfg.model.n_heads),
+        dropout=float(cfg.model.dropout),
+        max_len=int(cfg.model.max_len),
+        aatype_vocab=int(cfg.model.aatype_vocab),
+        sigma_trans=float(cfg.flow.sigma_trans),
+        chi_lora=cfg.get("chi_lora"),
+        esm=cfg.get("esm"),
+        seq_weight=float(cfg.flow.get("seq_weight", 1.0)),
+        angle_dim=int(cfg.model.get("angle_dim", 5)),
+        use_ot=bool(cfg.flow.get("use_ot", True)),
+    )
+    if include_multitask_weights:
+        kwargs["cfm_weight"] = float(cfg.flow.get("cfm_weight", 1.0))
+        kwargs["sym_weight"] = float(cfg.flow.get("sym_weight", 1.0))
+    return UniChiFlowModel(**kwargs)
+
+
+def build_optimizer(model: UniChiFlowModel, cfg: DictConfig, *, trainable_only: bool) -> torch.optim.Optimizer:
+    """AdamW over all params (backbone) or only requires_grad params (LoRA)."""
+    if trainable_only:
+        params = [p for p in model.parameters() if p.requires_grad]
+    else:
+        params = list(model.parameters())
+    return torch.optim.AdamW(
+        params,
+        lr=float(cfg.train.optimizer.lr),
+        weight_decay=float(cfg.train.optimizer.weight_decay),
+    )
+
+
+def load_initial_weights(model: UniChiFlowModel, cfg: DictConfig, device: str) -> UniChiFlowModel:
+    """Load a pre-trained backbone into the model via the LoRA-aware loader.
+
+    Mirrors `train_lora_real_d.py`'s original behavior. Returns the (possibly
+    rewrapped) model; `load_backbone_into_lora` may return a new object so we
+    propagate its return value.
+    """
+    ckpt_path = cfg.get("sample", {}).get("ckpt_path", None)
+    if not ckpt_path:
+        print("WARNING: No checkpoint path provided. Training from scratch (random initialization)!")
+        return model
+    print(f"Loading pre-trained backbone from {ckpt_path}...")
+    ckpt = torch.load(str(ckpt_path), map_location=device, weights_only=False)
+    return load_backbone_into_lora(model, ckpt['model'])

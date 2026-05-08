@@ -72,23 +72,36 @@ def flow_matching_loss(pred_x1: Tuple[torch.Tensor, ...], target_x1: Tuple[torch
     else:
         w_trans, w_rot, w_ang = float(weights[0]), float(weights[1]), float(weights[2])
 
-    v_true = target_velocity(trans_0, trans_1, rot_0, rot_1, ang_0, ang_1, sigma_min=sigma_min)
-    v_pred = predicted_velocity(pred_x1[0], pred_x1[1], pred_x1[2], trans_t, rot_t, ang_t, t, sigma_min=sigma_min)
+    # Compute displacements in x1-space first, THEN divide by dt. The old code clamped
+    # velocities after the /(1-t) amplification, which meant fp16 could already have
+    # overflowed to inf before clamp got a chance to fire. Clamping the x1-space
+    # displacement by (v_clip * dt) is mathematically equivalent (|v| <= v_clip) but
+    # keeps intermediates finite under AMP.
+    dt = torch.clamp(1.0 - t, min=sigma_min)[..., None]
+    cap_trans = v_clip * dt
+    cap_rot = v_clip * dt
+    cap_ang = v_clip * dt
 
-    clip_val_trans = v_clip
-    clip_val_rot = v_clip
-    clip_val_ang = v_clip
+    delta_true_trans = (trans_1 - trans_0).clamp(min=-cap_trans, max=cap_trans)
+    delta_pred_trans = (pred_x1[0] - trans_t).clamp(min=-cap_trans, max=cap_trans)
+
+    rel_rot_true = so3.relative_rotation(rot_0, rot_1)
+    delta_true_rot = so3.log_map(rel_rot_true).clamp(min=-cap_rot, max=cap_rot)
+    rel_rot_pred = so3.relative_rotation(rot_t, pred_x1[1])
+    delta_pred_rot = so3.log_map(rel_rot_pred).clamp(min=-cap_rot, max=cap_rot)
+
+    delta_true_ang = torus.tor_logmap(ang_0, ang_1).clamp(min=-cap_ang, max=cap_ang)
+    delta_pred_ang = torus.tor_logmap(ang_t, pred_x1[2]).clamp(min=-cap_ang, max=cap_ang)
 
     losses = []
     if mask.any():
-        vp0 = v_pred[0].clamp(min=-clip_val_trans, max=clip_val_trans)
-        vt0 = v_true[0].clamp(min=-clip_val_trans, max=clip_val_trans)
-
-        vp1 = v_pred[1].clamp(min=-clip_val_rot, max=clip_val_rot)
-        vt1 = v_true[1].clamp(min=-clip_val_rot, max=clip_val_rot)
-
-        vp2 = v_pred[2].clamp(min=-clip_val_ang, max=clip_val_ang)
-        vt2 = v_true[2].clamp(min=-clip_val_ang, max=clip_val_ang)
+        # Divide by dt once, AFTER clamping, so each velocity is guaranteed in [-v_clip, v_clip].
+        vt0 = delta_true_trans / dt
+        vp0 = delta_pred_trans / dt
+        vt1 = delta_true_rot / dt
+        vp1 = delta_pred_rot / dt
+        vt2 = delta_true_ang / dt
+        vp2 = delta_pred_ang / dt
 
         losses.append(w_trans * F.smooth_l1_loss(vp0[mask], vt0[mask], reduction='mean', beta=huber_beta))
         losses.append(w_rot * F.smooth_l1_loss(vp1[mask], vt1[mask], reduction='mean', beta=huber_beta))
@@ -103,42 +116,52 @@ def symmetry_consistency_loss(pred_out: Tuple[torch.Tensor, ...], pred_sym_out: 
                               x_t: Tuple[torch.Tensor, ...], x_t_sym: Tuple[torch.Tensor, ...],
                               t: torch.Tensor, mask: torch.Tensor, sigma_min: float = 1e-4,
                               v_clip: float = 50.0, huber_beta: float = 0.25) -> torch.Tensor:
-    v_pred = predicted_velocity(pred_out[0], pred_out[1], pred_out[2],
-                                x_t[0], x_t[1], x_t[2], t, sigma_min=sigma_min)
+    """Parity-consistency loss: v(P x_t) should equal P v(x_t).
 
-    v_pred_sym = predicted_velocity(pred_sym_out[0], pred_sym_out[1], pred_sym_out[2],
-                                    x_t_sym[0], x_t_sym[1], x_t_sym[2], t, sigma_min=sigma_min)
+    Velocities are compared in x1-space (clamp-before-divide) for the same AMP-safety
+    reason as flow_matching_loss; the parity transform P commutes with per-channel
+    clamping because it is a sign flip on each coordinate.
+    """
+    dt = torch.clamp(1.0 - t, min=sigma_min)[..., None]
+    cap = v_clip * dt
 
-    target_v0 = parity_positions(v_pred_sym[0])
-    target_v1 = parity_rotvec(v_pred_sym[1])
-    target_v2 = parity_torsions(v_pred_sym[2])
+    # Main branch: displacements from x_t to pred_x1, clipped in x1-space.
+    delta_trans = (pred_out[0] - x_t[0]).clamp(min=-cap, max=cap)
+    rel_rot = so3.relative_rotation(x_t[1], pred_out[1])
+    delta_rot = so3.log_map(rel_rot).clamp(min=-cap, max=cap)
+    delta_ang = torus.tor_logmap(x_t[2], pred_out[2]).clamp(min=-cap, max=cap)
 
-    clip_val = v_clip
+    # Symmetric branch: same clamp applied in parity-mirrored space.
+    delta_trans_sym = (pred_sym_out[0] - x_t_sym[0]).clamp(min=-cap, max=cap)
+    rel_rot_sym = so3.relative_rotation(x_t_sym[1], pred_sym_out[1])
+    delta_rot_sym = so3.log_map(rel_rot_sym).clamp(min=-cap, max=cap)
+    delta_ang_sym = torus.tor_logmap(x_t_sym[2], pred_sym_out[2]).clamp(min=-cap, max=cap)
+
+    # Target for main velocity = P applied to sym-branch velocity.
+    target_v0 = parity_positions(delta_trans_sym / dt)
+    target_v1 = parity_rotvec(delta_rot_sym / dt)
+    target_v2 = parity_torsions(delta_ang_sym / dt)
+
+    v_main_0 = delta_trans / dt
+    v_main_1 = delta_rot / dt
+    v_main_2 = delta_ang / dt
 
     losses = []
     if mask.any():
-        vp0 = v_pred[0].clamp(min=-clip_val, max=clip_val)
-        vt0 = target_v0.clamp(min=-clip_val, max=clip_val)
-        vp1 = v_pred[1].clamp(min=-clip_val, max=clip_val)
-        vt1 = target_v1.clamp(min=-clip_val, max=clip_val)
-        vp2 = v_pred[2].clamp(min=-clip_val, max=clip_val)
-        vt2 = target_v2.clamp(min=-clip_val, max=clip_val)
-        losses.append(F.smooth_l1_loss(vp0[mask], vt0[mask], reduction='mean', beta=huber_beta))
-        losses.append(F.smooth_l1_loss(vp1[mask], vt1[mask], reduction='mean', beta=huber_beta))
-        losses.append(F.smooth_l1_loss(vp2[mask], vt2[mask], reduction='mean', beta=huber_beta))
+        losses.append(F.smooth_l1_loss(v_main_0[mask], target_v0[mask], reduction='mean', beta=huber_beta))
+        losses.append(F.smooth_l1_loss(v_main_1[mask], target_v1[mask], reduction='mean', beta=huber_beta))
+        losses.append(F.smooth_l1_loss(v_main_2[mask], target_v2[mask], reduction='mean', beta=huber_beta))
     else:
-        losses.append(v_pred[0].new_tensor(0.0))
+        losses.append(v_main_0.new_tensor(0.0))
 
     return sum(losses)
 
 
 def _clone_batch_with_chirality(batch: Dict[str, torch.Tensor], chirality: torch.Tensor) -> Dict[str, torch.Tensor]:
-	batch_sym = {}
-	for k, v in batch.items():
-		if isinstance(v, torch.Tensor):
-			batch_sym[k] = v.clone()
-		else:
-			batch_sym[k] = v
+	# Shallow copy: the sym branch only replaces `chirality`. Every other tensor
+	# (including cached `esm_cond`) is read-only inside predict_x1, so reusing the
+	# same object is safe and saves a full-batch clone per step.
+	batch_sym = dict(batch)
 	batch_sym['chirality'] = chirality
 	return batch_sym
 

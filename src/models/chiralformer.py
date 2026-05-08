@@ -1,4 +1,6 @@
+import contextlib
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Dict, Iterable, Optional, Set, Tuple
 
@@ -63,13 +65,30 @@ class ChiLoRAConfig:
             return cls()
         if isinstance(cfg, ChiLoRAConfig):
             return cfg
-        try:
-            data = {k: v for k, v in cfg.items()}
-        except Exception:
+
+        # Explicit handling: accept dict, Mapping, or OmegaConf DictConfig. Earlier
+        # versions swallowed any TypeError/AttributeError and silently returned
+        # disabled defaults — so a malformed config would look like "LoRA off"
+        # instead of raising, which is exactly the failure mode we want to kill.
+        if isinstance(cfg, Mapping):
+            data = dict(cfg)
+        else:
             try:
-                data = dict(cfg)
-            except Exception:
-                data = {}
+                from omegaconf import DictConfig, OmegaConf  # type: ignore
+            except ImportError:
+                DictConfig = None  # type: ignore
+                OmegaConf = None  # type: ignore
+            if DictConfig is not None and isinstance(cfg, DictConfig):
+                data = OmegaConf.to_container(cfg, resolve=True)  # type: ignore[arg-type]
+                if not isinstance(data, dict):
+                    raise TypeError(
+                        f"ChiLoRAConfig.from_cfg: DictConfig resolved to {type(data)}, expected dict"
+                    )
+            else:
+                raise TypeError(
+                    f"ChiLoRAConfig.from_cfg: unsupported cfg type {type(cfg)}. "
+                    f"Expected dict, Mapping, DictConfig, or ChiLoRAConfig."
+                )
 
         targets = data.get("targets", cls.targets)
         if isinstance(targets, str):
@@ -77,7 +96,9 @@ class ChiLoRAConfig:
         elif isinstance(targets, Iterable):
             targets = tuple(str(t) for t in targets)
         else:
-            targets = cls.targets
+            raise TypeError(
+                f"ChiLoRAConfig.targets must be a string or iterable of strings, got {type(targets)}"
+            )
 
         return cls(
             enabled=bool(data.get("enable", data.get("enabled", False))),
@@ -148,11 +169,16 @@ class UniChiFlowModel(nn.Module):
     def __init__(self, d_model: int = 256, n_layers: int = 6, n_heads: int = 8, dropout: float = 0.1, max_len: int = 512, aatype_vocab: int = 21,
                  sigma_trans: float = 1.0, chi_lora: Optional[Dict] = None, esm: Optional[Dict] = None, cfm_weight: float = 1.0, sym_weight: float = 1.0,
                  seq_weight: float = 1.0, angle_dim: int = 5, use_ot: bool = True,
-                 cfm_w_trans: float = 1.0, cfm_w_rot: float = 1.0, cfm_w_ang: float = 1.0):
+                 cfm_w_trans: float = 1.0, cfm_w_rot: float = 1.0, cfm_w_ang: float = 1.0,
+                 coord_scale: float = 0.1):
         super().__init__()
         self.d_model = int(d_model)
         self.max_len = int(max_len)
         self.aatype_vocab = int(aatype_vocab)
+        # Single-source-of-truth for coordinate unit conversion: PDB angstroms -> model units.
+        # Applied in corrupt_batch and sample (entry points that consume raw batch['pos_heavyatom']).
+        # Training/inference scripts must NOT pre-scale batch['pos_heavyatom'] themselves.
+        self.coord_scale = float(coord_scale)
         self.flow_cfg = FlowConfig(
             sigma_trans=float(sigma_trans),
             cfm_weight=float(cfm_weight),
@@ -241,12 +267,43 @@ class UniChiFlowModel(nn.Module):
                     param.requires_grad = False
 
     def _set_chi_lora_gate(self, gate: Optional[torch.Tensor]):
+        # Guard against overlapping forward passes that forget to clear the previous gate.
+        # The two predict_x1 calls in forward()/compute_symmetry_loss run sequentially,
+        # so gate should be None whenever we set a new one; assert that invariant.
         for m in self._chi_lora_modules:
+            if m._gate is not None and gate is not None:
+                raise RuntimeError("ChiLoRA gate is already set; previous forward did not clear it")
             m.set_gate(gate)
 
     def _clear_chi_lora_gate(self):
         for m in self._chi_lora_modules:
             m.set_gate(None)
+
+    @contextlib.contextmanager
+    def _chi_lora_gate(self, gate: Optional[torch.Tensor]):
+        """Scope a ChiLoRA gate to a single forward pass and always clear it on exit."""
+        self._set_chi_lora_gate(gate)
+        try:
+            yield
+        finally:
+            self._clear_chi_lora_gate()
+
+    @staticmethod
+    def _safe_padding_mask(res_mask: torch.Tensor) -> torch.Tensor:
+        """Build Transformer src_key_padding_mask (True = pad) from res_mask (True = valid).
+
+        Guards against rows where every position is padded: nn.TransformerEncoder's
+        softmax degenerates to 0/0 -> NaN if an entire row is masked out. When we
+        detect such a row we flip position 0 to valid; the corresponding token is
+        meaningless (it's a padding slot), but it keeps softmax numerically defined
+        and downstream loss masks (res_mask & generate_mask) still exclude it.
+        """
+        key_pad = ~res_mask
+        all_pad_rows = key_pad.all(dim=-1)
+        if all_pad_rows.any():
+            key_pad = key_pad.clone()
+            key_pad[all_pad_rows, 0] = False
+        return key_pad
 
     def _embed_t(self, t: torch.Tensor, L: int) -> torch.Tensor:
         # t: (B,1) -> (B,L,d)
@@ -266,7 +323,8 @@ class UniChiFlowModel(nn.Module):
     def corrupt_batch(self, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Create interpolants and endpoints for PH-Flow with optional minibatch OT alignment."""
         aa_1 = batch['aa']
-        pos = batch['pos_heavyatom']
+        # Apply centralized coord scaling once (idempotent: callers must pass raw angstroms).
+        pos = batch['pos_heavyatom'] * self.coord_scale
         gen_mask = batch['generate_mask'].bool()
         res_mask = batch['res_mask'].bool()
 
@@ -355,11 +413,24 @@ class UniChiFlowModel(nn.Module):
 
         B, L = seq_t.shape
 
+        # pos_emb has max_len+8 entries. Fail loudly if the batch exceeds that:
+        # silently clamping the overflow collapses two distinct residues onto the same
+        # positional embedding, which corrupts the whole sequence without any error.
+        pos_capacity = self.max_len + 8
+        if L > pos_capacity:
+            raise ValueError(
+                f"Sequence length L={L} exceeds positional embedding capacity "
+                f"(max_len + 8 = {pos_capacity}). Increase `model.max_len` in the config."
+            )
+
         # positional ids: clamp into max_len
         pos_ids = batch.get('res_nb', torch.arange(L, device=seq_t.device)[None].repeat(B, 1))
         if isinstance(pos_ids, torch.Tensor):
             pos_ids = _squeeze_last_if_one(pos_ids, dims=[-1], name='res_nb')
-        pos_ids = pos_ids.clamp(min=0, max=self.max_len + 7)
+        # res_nb is author-supplied (PDB numbering, can be >> L); clamping into
+        # [0, pos_capacity-1] is fine here — the L-level overflow check above is
+        # what catches the real "sequence too long" bug.
+        pos_ids = pos_ids.clamp(min=0, max=pos_capacity - 1)
         if not isinstance(pos_ids, torch.Tensor) or pos_ids.ndim != 2:
             raise ValueError(f"Expected res_nb/pos_ids to have shape (B,L), got {type(pos_ids)} with shape {getattr(pos_ids, 'shape', None)}")
 
@@ -425,14 +496,11 @@ class UniChiFlowModel(nn.Module):
             if isinstance(gate, torch.Tensor) and gate.ndim == 2 and gate.shape[-1] == 1:
                 gate = gate.squeeze(-1)
             gate = gate.view(B, 1, 1).to(seq_t.device, dtype=x.dtype) * pep_mask.to(x.dtype)
-            self._set_chi_lora_gate(gate)
         else:
             gate = None
 
-        h = self.trunk(x, src_key_padding_mask=(~res_mask))
-
-        if gate is not None:
-            self._clear_chi_lora_gate()
+        with self._chi_lora_gate(gate) if gate is not None else contextlib.nullcontext():
+            h = self.trunk(x, src_key_padding_mask=self._safe_padding_mask(res_mask))
 
         pred_trans_1 = self.out_trans(h)
         pred_rot_1 = rot6d_to_rotmat(self.out_rot6d(h))
@@ -446,8 +514,57 @@ class UniChiFlowModel(nn.Module):
             'pred_seq_logits': pred_seq_logits,
         }
 
+    # Kendall-style uncertainty weighting bounds: σ² ∈ [e^-5, e^5] ≈ [6.7e-3, 148]
+    # keeps precisions = exp(-log_var) in [e^-5, e^5] and prevents runaway during AMP.
+    _LOG_VAR_MIN = -5.0
+    _LOG_VAR_MAX = 5.0
+
+    def _compute_total_loss(self, cfm_loss, sym_loss, seq_loss, sym_weight_override):
+        """Combine component losses. Returns (total, w_cfm, w_sym, w_seq) for logging.
+
+        Modes:
+          - Manual (loss_log_vars is None): honor cfm_weight/seq_weight and either the
+            override or flow_cfg.sym_weight.
+          - Auto Kendall (loss_log_vars present): L = 0.5*exp(-s)*L_i + 0.5*s. When
+            sym_weight_override is provided (sym warmup still active), sym keeps manual
+            weight while cfm/seq are learned.
+        """
+        if self.loss_log_vars is None:
+            w_cfm = self.flow_cfg.cfm_weight
+            w_seq = self.flow_cfg.seq_weight
+            w_sym = sym_weight_override if sym_weight_override is not None else self.flow_cfg.sym_weight
+            total = w_cfm * cfm_loss + w_sym * sym_loss + w_seq * seq_loss
+            return total, w_cfm, w_sym, w_seq
+
+        log_vars = self.loss_log_vars.clamp(min=self._LOG_VAR_MIN, max=self._LOG_VAR_MAX)
+        prec = torch.exp(-log_vars)
+        w_cfm = 0.5 * prec[0]
+        w_seq = 0.5 * prec[2]
+        L_cfm = w_cfm * cfm_loss + 0.5 * log_vars[0]
+        L_seq = w_seq * seq_loss + 0.5 * log_vars[2]
+
+        if sym_weight_override is not None:
+            w_sym = sym_weight_override
+            total = L_cfm + w_sym * sym_loss + L_seq
+        else:
+            w_sym = 0.5 * prec[1]
+            L_sym = w_sym * sym_loss + 0.5 * log_vars[1]
+            total = L_cfm + L_sym + L_seq
+        return total, w_cfm, w_sym, w_seq
+
     def forward(self, batch: Dict[str, torch.Tensor], sym_weight_override: Optional[float] = None) -> Dict[str, torch.Tensor]:
         t, seq_t, trans_t, rot_t, ang_t, aa_1, trans_1, rot_1, ang_1, trans_0, rot_0, ang_0 = self.corrupt_batch(batch)
+
+        # Cache raw ESM conditioner output once and share across main/sym branches.
+        # ESM features depend only on the sequence (seq_t, res_mask) — parity flips positions,
+        # not amino acids — so the mirror branch must see the exact same ESM tensor.
+        # predict_x1 still runs the cheap per-branch esm_proj + chirality-gated esm_adapter on top.
+        if self.esm_conditioner is not None and batch.get('esm_cond', None) is None:
+            res_mask_for_esm = batch['res_mask'].bool()
+            with torch.no_grad():
+                esm_cond_raw, _ = self.esm_conditioner(seq_t, res_mask_for_esm)
+            batch['esm_cond'] = esm_cond_raw
+
         out = self.predict_x1(batch, t, seq_t, trans_t, rot_t, ang_t)
 
         res_mask = batch['res_mask'].bool()
@@ -486,83 +603,10 @@ class UniChiFlowModel(nn.Module):
             seq_loss = F.cross_entropy(out['pred_seq_logits'][mask], aa_1[mask].clamp(max=self.aatype_vocab - 1))
         else:
             seq_loss = torch.tensor(0.0, device=aa_1.device)
-        
-        # Apply weights with optional override for symmetry
-        w_sym = sym_weight_override if sym_weight_override is not None else self.flow_cfg.sym_weight
-        
-        if self.loss_log_vars is not None and sym_weight_override is None:
-            # Automatic Uncertainty Weighting (Homoscedastic Uncertainty)
-            # L = 1/(2*sigma^2) * L_i + log(sigma)
-            # using approximation: exp(-log_var) * L + log_var
-            # We treat cfm, sym, seq as 3 tasks.
-            
-            # Note: 0.5 factor is common in literature (Kendall et al.), but implementation varies.
-            # Here using: 0.5 * exp(-s) * L + 0.5 * s
-            
-            precisions = torch.exp(-self.loss_log_vars)
-            
-            # Loss 1: CFM
-            L_cfm = precisions[0] * cfm_loss + self.loss_log_vars[0]
-            
-            # Loss 2: Sym
-            L_sym = precisions[1] * sym_loss + self.loss_log_vars[1]
-            
-            # Loss 3: Seq
-            L_seq = precisions[2] * seq_loss + self.loss_log_vars[2]
-            
-            # Scale by original hyperparams to keep relative priority if desired?
-            # Standard Uncertainty Weighting replaces manual weights entirely.
-            # But here we might want to keep sym_weight as a hard switch (e.g. 0 during warmup)
-            
-            # If warmup is active (sym_weight_override < target), we should probably not learn its weight freely yet.
-            # But this block is only entered if sym_weight_override is None.
-            # Given the training script passes override, this block might be skipped during warmup!
-            # Let's handle the override logic below.
-            
-            total = 0.5 * (L_cfm + L_sym + L_seq)
-            
-            # To allow logging of effective weights
-            # eff_w_cfm = 0.5 * precisions[0].item()
-        
-        else:
-            # Manual weighting
-            total = self.flow_cfg.cfm_weight * cfm_loss + w_sym * sym_loss + self.flow_cfg.seq_weight * seq_loss
 
-        # Handle Mixed Mode: If auto_weighting is ON but we are in warmup (sym_weight_override passed)
-        if self.loss_log_vars is not None and sym_weight_override is not None:
-             precisions = torch.exp(-self.loss_log_vars)
-             
-             eff_w_cfm = 0.5 * precisions[0]
-             eff_w_seq = 0.5 * precisions[2]
-             
-             # Learn CFM and SEQ weights, but keep SYM manual (warmup controlled)
-             L_cfm = eff_w_cfm * cfm_loss + 0.5 * self.loss_log_vars[0]
-             L_seq = eff_w_seq * seq_loss + 0.5 * self.loss_log_vars[2]
-             
-             # Sym is manual
-             L_sym_manual = w_sym * sym_loss
-             
-             total = L_cfm + L_sym_manual + L_seq
-             
-             eff_w_sym = w_sym
-        
-        elif self.loss_log_vars is None:
-             eff_w_cfm = self.flow_cfg.cfm_weight
-             eff_w_sym = w_sym
-             eff_w_seq = self.flow_cfg.seq_weight
-             total = eff_w_cfm * cfm_loss + eff_w_sym * sym_loss + eff_w_seq * seq_loss
-        else:
-             # Fully auto (sym_weight_override is None)
-             precisions = torch.exp(-self.loss_log_vars)
-             eff_w_cfm = 0.5 * precisions[0]
-             eff_w_sym = 0.5 * precisions[1]
-             eff_w_seq = 0.5 * precisions[2]
-             
-             L_cfm = eff_w_cfm * cfm_loss + 0.5 * self.loss_log_vars[0]
-             L_sym = eff_w_sym * sym_loss + 0.5 * self.loss_log_vars[1]
-             L_seq = eff_w_seq * seq_loss + 0.5 * self.loss_log_vars[2]
-             
-             total = L_cfm + L_sym + L_seq
+        total, eff_w_cfm, eff_w_sym, eff_w_seq = self._compute_total_loss(
+            cfm_loss, sym_loss, seq_loss, sym_weight_override
+        )
 
         return {
             'loss': total,
@@ -578,27 +622,24 @@ class UniChiFlowModel(nn.Module):
     def decode_to_heavyatom15(self, aa: torch.Tensor, trans: torch.Tensor, rotmats: torch.Tensor, angles: torch.Tensor, chirality: torch.Tensor, peptide_mask: torch.Tensor, hard_constraints: bool = True):
         """Geometric decoder with optional hard chirality enforcement.
 
-        When hard_constraints is True (default), applies Z-axis frame reflection to D-mode
-        residues as per paper Eq. (10). The angle values remain unchanged; only the local
-        coordinate frame is mirrored. This guarantees correct D-chirality geometry without
-        additional angle modifications that could distort the learned torsion distribution.
+        Delegates to HardGeometricDecoder so the identity
+            Mirror(L_geom(theta)) = D_geom(-theta)
+        (paper Eq. (10)) is applied consistently: for residues with chirality=1 in the
+        peptide mask, we both mirror the backbone frame (diag(1,1,-1)) and negate the
+        torsion angles before feeding them into the standard L-amino-acid reconstruction.
+
+        When hard_constraints=False we skip the mirror + angle flip (used by ablations
+        that want to measure the raw model's chiral error).
         """
-        B, L = aa.shape
-        device = aa.device
-
-        M = torch.diag(torch.tensor([1.0, 1.0, -1.0], device=device, dtype=rotmats.dtype))
-
-        rotmats_dec = rotmats.clone()
-        chir = chirality.view(B, 1, 1, 1).to(rotmats.dtype)
-        pep = peptide_mask.view(B, L, 1, 1).to(rotmats.dtype)
-
-        base = torch.eye(3, device=device, dtype=rotmats.dtype)
         if hard_constraints:
-            rotmats_dec = rotmats_dec @ (base + chir * pep * (M - base))
+            from src.models.hard_geometric_decoder import HardGeometricDecoder
+            decoder = HardGeometricDecoder()
+            return decoder(aa=aa, trans=trans, rotmats=rotmats, angles=angles,
+                           chirality=chirality, peptide_mask=peptide_mask)
 
-        pos14, _, _ = full_atom_reconstruction(R_bb=rotmats_dec, t_bb=trans, angles=angles, aa=aa)
+        # Ablation path: no chirality enforcement at all.
+        pos14, _, _ = full_atom_reconstruction(R_bb=rotmats, t_bb=trans, angles=angles, aa=aa)
         pos15 = F.pad(pos14, pad=(0, 0, 0, 15 - 14), value=0.0)
-
         mask15 = get_heavyatom_mask(aa)
         return pos15, mask15
 
@@ -606,7 +647,9 @@ class UniChiFlowModel(nn.Module):
     def sample(self, batch: Dict[str, torch.Tensor], num_steps: int = 30, angle_purify: bool = True):
         device = batch['aa'].device
         aa_gt = batch['aa']
-        pos = batch['pos_heavyatom']
+        # Centralized coord scaling (same units as corrupt_batch); decoded outputs stay in
+        # scaled units -- callers/scripts are responsible for unscaling via self.coord_scale.
+        pos = batch['pos_heavyatom'] * self.coord_scale
         gen_mask = batch['generate_mask'].bool()
         res_mask = batch['res_mask'].bool()
         B, L = aa_gt.shape
@@ -616,34 +659,34 @@ class UniChiFlowModel(nn.Module):
         trans_1 = pos[:, :, BBHeavyAtom.CA]
         ang_1 = batch['torsion_angle']
 
-        # init state
-        t0 = torch.zeros((B, 1), device=device)
+        # init state at t=0
         trans = torch.where(gen_mask[..., None], torch.randn((B, L, 3), device=device) * self.flow_cfg.sigma_trans, trans_1)
         rot = torch.where(gen_mask[..., None, None], so3.quat_to_rotmat(self._random_quat((B, L), device=device, dtype=trans.dtype)), rot_1)
         ang = torch.where(gen_mask[..., None], torus.tor_random_uniform(B, L, ang_1.shape[-1], device=device, dtype=ang_1.dtype), ang_1)
         seq = torch.where(gen_mask, torch.full_like(aa_gt, du.MASK_TOKEN_INDEX), aa_gt)
         seq = torch.where(res_mask, seq, torch.full_like(seq, du.MASK_TOKEN_INDEX))
 
-        dt = 1.0 / float(num_steps)
+        # Discretize t in [0, 1] over num_steps+1 points: t_k = k/num_steps.
+        # At step k we move from t_k to t_{k+1}; the x1-interpolation form
+        #   x_{k+1} = (1-alpha) x_k + alpha * pred_x1,    alpha = dt / (1 - t_k)
+        # is mathematically equivalent to the velocity-field integration
+        #   x_{k+1} = x_k + (pred_x1 - x_k) / (1 - t_k) * dt
+        # but avoids the explicit 1/(1-t) blow-up at t -> 1 (alpha saturates to 1 in the limit).
         for k in range(num_steps):
-            t = torch.full((B, 1), (k + 1) / float(num_steps), device=device)
+            t_k = k / float(num_steps)
+            t = torch.full((B, 1), t_k, device=device)
             pred = self.predict_x1(batch, t, seq, trans, rot, ang)
 
             pep = gen_mask & res_mask
             if pep.any():
-                dt_val = 1.0 - t.clamp(min=1e-6)
-                dt_val = dt_val.unsqueeze(-1)
+                remaining = 1.0 - t_k
+                # last step: alpha = 1 (land exactly on prediction); otherwise alpha = dt / (1 - t_k).
+                alpha = 1.0 if k == num_steps - 1 else min(1.0, (1.0 / float(num_steps)) / max(remaining, 1e-6))
+                alpha_t = torch.tensor(alpha, device=device, dtype=trans.dtype)
 
-                v_trans = (pred['pred_trans_1'] - trans) / dt_val
-
-                trans_new = trans + v_trans * dt
-                rot_delta = so3.relative_rotation(rot, pred['pred_rot_1'])
-                v_rot = so3.log_map(rot_delta) / dt_val
-                rot_new = so3.exp_map(v_rot * dt).matmul(rot)
-
-                ang_delta = torus.tor_logmap(ang, pred['pred_ang_1'])
-                v_ang = ang_delta / dt_val
-                ang_new = torus.tor_expmap(v_ang * dt, ang)
+                trans_new = trans + alpha_t * (pred['pred_trans_1'] - trans)
+                rot_new = so3.geodesic_t(alpha_t, pred['pred_rot_1'], rot)
+                ang_new = torus.tor_geodesic_t(alpha_t, pred['pred_ang_1'], ang)
 
                 trans = torch.where(pep[..., None], trans_new, trans)
                 rot = torch.where(pep[..., None, None], rot_new, rot)
@@ -654,6 +697,12 @@ class UniChiFlowModel(nn.Module):
 
             if angle_purify:
                 ang = ang % (2 * math.pi)
+
+        # Unscale translations back to the caller's unit system (raw angstroms).
+        # Rotations / angles are scale-invariant and stay as-is. After this line,
+        # all outputs live in the same unit system as the original batch['pos_heavyatom'],
+        # so downstream decode/merge/save steps can treat them as plain angstroms.
+        trans = trans / self.coord_scale
 
         return {
             'seq': seq,

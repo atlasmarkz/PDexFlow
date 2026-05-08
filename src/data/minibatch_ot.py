@@ -1,4 +1,5 @@
 """Minibatch Riemannian OT utilities for UniChiFlow."""
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Tuple, Union
 
 import torch
@@ -9,6 +10,21 @@ try:  # optional SciPy dependency
     from scipy.optimize import linear_sum_assignment
 except Exception:  # pragma: no cover - fallback when SciPy is absent
     linear_sum_assignment = None
+
+
+# scipy.optimize.linear_sum_assignment is a C extension that releases the GIL,
+# so running batch elements in a thread pool is a real wall-clock win for B>1.
+# Capped modestly — the per-call work is small and too many threads only adds
+# dispatch overhead. Reused across calls to avoid startup cost per step.
+_OT_THREAD_POOL: Optional[ThreadPoolExecutor] = None
+_OT_MAX_WORKERS = 8
+
+
+def _get_ot_pool() -> ThreadPoolExecutor:
+    global _OT_THREAD_POOL
+    if _OT_THREAD_POOL is None:
+        _OT_THREAD_POOL = ThreadPoolExecutor(max_workers=_OT_MAX_WORKERS, thread_name_prefix="ot")
+    return _OT_THREAD_POOL
 
 
 def pairwise_cost(z0: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
@@ -46,27 +62,58 @@ def pairwise_cost(z0: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torc
     return cost
 
 
+def _greedy_permutation(cost_b: torch.Tensor) -> torch.Tensor:
+    """Greedy fallback that produces a valid permutation (no repeated columns).
+
+    Worse than Hungarian but keeps the OT invariant: every source index maps to a
+    unique target. Used only when SciPy is unavailable.
+    """
+    N = cost_b.shape[0]
+    perm = torch.empty(N, dtype=torch.long, device=cost_b.device)
+    taken = torch.zeros(N, dtype=torch.bool, device=cost_b.device)
+    # Greedy row-by-row: for each source row, pick the cheapest unused target.
+    work = cost_b.clone()
+    for i in range(N):
+        # mask out taken columns with +inf so they won't be picked
+        j = int(torch.argmin(work[i]).item())
+        perm[i] = j
+        taken[j] = True
+        work[:, j] = float('inf')
+    return perm
+
+
 def solve_ot(cost: torch.Tensor) -> torch.Tensor:
     """Solve linear assignment for each batch element.
 
     Returns permutation indices for x0 such that x0[perm] aligns to x1.
     """
     B, N, _ = cost.shape
-    perm = torch.zeros((B, N), dtype=torch.long, device=cost.device)
     if linear_sum_assignment is None:
-        # fallback: greedy argmin per row (not optimal but works without SciPy)
-        perm = cost.argmin(dim=-1)
-        return perm
+        # Keep a valid permutation when SciPy is missing. argmin per row would
+        # produce repeated indices, which breaks gather-based alignment downstream.
+        perms = [_greedy_permutation(cost[b].detach()) for b in range(B)]
+        return torch.stack(perms, dim=0).to(cost.device)
 
     cost_cpu = cost.detach().cpu()
+    cost_np = [cost_cpu[b].numpy() for b in range(B)]
+
+    def _solve_one(mat):
+        row_ind, col_ind = linear_sum_assignment(mat)
+        return row_ind, col_ind
+
+    # Small batches aren't worth the dispatch cost — just run inline.
+    if B <= 2:
+        results = [_solve_one(m) for m in cost_np]
+    else:
+        pool = _get_ot_pool()
+        results = list(pool.map(_solve_one, cost_np))
+
     perms = []
-    for b in range(B):
-        row_ind, col_ind = linear_sum_assignment(cost_cpu[b].numpy())
+    for row_ind, col_ind in results:
         if len(row_ind) != N:
             raise RuntimeError("OT solver returned incomplete assignment")
-        # map row->col
         p = torch.empty(N, dtype=torch.long)
-        p[row_ind] = torch.tensor(col_ind, dtype=torch.long)
+        p[row_ind] = torch.as_tensor(col_ind, dtype=torch.long)
         perms.append(p)
     perm = torch.stack(perms, dim=0).to(cost.device)
     return perm

@@ -106,7 +106,6 @@ def main(cfg: DictConfig):
 
     collate = PaddingCollate(eight=False)
 
-    SCALE = 0.1  # match train-time coordinate normalization
     for idx in tqdm(range(min(len(ds), 10)), desc="inference"):
         data_list = [deepcopy(ds[idx]) for _ in range(int(sam.num_samples))]
         batch = collate(data_list)
@@ -118,10 +117,10 @@ def main(cfg: DictConfig):
         # overwrite chirality (0=L,1=D) for decoding
         batch['chirality'] = torch.full((len(data_list),), int(sam.chirality_token), dtype=torch.long)
 
-        # match training: scale coordinates for stability
-        if 'pos_heavyatom' in batch:
-            batch['pos_heavyatom'] = batch['pos_heavyatom'] * SCALE
-
+        # Coordinate scaling lives entirely inside UniChiFlowModel now:
+        #   - sample() scales batch['pos_heavyatom'] on entry,
+        #   - sample() unscales trans on return,
+        # so batch and model outputs are consistently in raw angstroms here.
         batch = du.recursive_to(batch, device)
         sample = model.sample(batch, num_steps=int(sam.num_steps), angle_purify=bool(cfg.flow.angle_purify))
 
@@ -135,12 +134,12 @@ def main(cfg: DictConfig):
             hard_constraints=bool(cfg.sample.get("use_hard_decoder", True)),
         )
 
-        # Use predicted peptide, keep receptor from GT (in scaled domain)
+        # Use predicted peptide, keep receptor from GT (both in raw angstroms)
         pos_out = torch.where(batch['generate_mask'][:, :, None, None], pos15_pred, batch['pos_heavyatom'])
         mask_out = torch.where(batch['generate_mask'][:, :, None], mask15_pred, batch['mask_heavyatom'])
 
         # NOTE: WE REMOVED THE GLOBAL FLIP HERE.
-        # The Decoder (decode_to_heavyatom15) with hard_constraints=True ALREADY generates D-geometric coordinates 
+        # The Decoder (decode_to_heavyatom15) with hard_constraints=True ALREADY generates D-geometric coordinates
         # (via Z-flip) for D-peptides.
         # If we flip again here (Global -1), we invert the D-peptide back to L, destroying the chirality.
         # We assume the Receptor input was Real (L) and we want D-peptide output.
@@ -155,9 +154,8 @@ def main(cfg: DictConfig):
         chain_id = [list(item) for item in zip(*batch['chain_id'])][0]
         icode = [list(item) for item in zip(*batch['icode'])][0]
 
-        # unscale positions back to original units for saving
-        pos_out_save = pos_out / SCALE
-        pos_gt_save = batch['pos_heavyatom'] / SCALE
+        pos_out_save = pos_out
+        pos_gt_save = batch['pos_heavyatom']
 
         for j in range(pos_out.shape[0]):
             data_saved = {
