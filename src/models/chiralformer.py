@@ -379,18 +379,55 @@ class UniChiFlowModel(nn.Module):
         if pep_mask.any():
             trans_0 = self._center_noise_on_pep(trans_0, pep_mask)
         if self.flow_cfg.use_ot and pep_mask.any():
-            # OT aligns noisy samples to data within peptide residues, improving straightness of flow lines.
-            for b in range(B):
-                idx = torch.nonzero(pep_mask[b], as_tuple=False).squeeze(-1)
-                if idx.numel() == 0:
-                    continue
-                z0 = (trans_0[b:b + 1, idx], rot_0[b:b + 1, idx], ang_0[b:b + 1, idx])
-                z1 = (trans_1[b:b + 1, idx], rot_1[b:b + 1, idx], ang_1[b:b + 1, idx])
-                cost = minibatch_ot.pairwise_cost(z0, z1)
-                perm = minibatch_ot.solve_ot(cost)[0]
-                trans_0[b, idx] = z0[0][0, perm]
-                rot_0[b, idx] = z0[1][0, perm]
-                ang_0[b, idx] = z0[2][0, perm]
+            # OT aligns noisy samples to data within peptide residues, improving
+            # straightness of flow lines. We build per-b cost matrices first, then
+            # pad to uniform N_max and issue ONE batched solve_ot call — this lets
+            # the internal ThreadPoolExecutor (src/data/minibatch_ot.py) actually
+            # parallelize Hungarian across B. The prior per-b `solve_ot` loop
+            # always hit the `B <= 2` inline branch inside solve_ot and wasted R6.
+            n_per_b = pep_mask.sum(dim=1).tolist()  # single CPU sync, unavoidable
+            n_max = max(n_per_b) if n_per_b else 0
+            if n_max > 0:
+                idxs: list = [None] * B
+                srcs: list = [None] * B  # (trans, rot, ang) snapshots pre-shuffle
+                # Padding cost uses `1e6` + zero diagonal so Hungarian pins padding
+                # rows to padding cols (trivial assignment, no interference with
+                # real peptide rows). Matches the `mask1` sentinel in pairwise_cost.
+                cost_batch = torch.full(
+                    (B, n_max, n_max), 1e6, device=device, dtype=trans_1.dtype
+                )
+                diag_arange = torch.arange(n_max, device=device)
+                for b in range(B):
+                    n = n_per_b[b]
+                    if n == 0:
+                        cost_batch[b, diag_arange, diag_arange] = 0.0
+                        continue
+                    idx = torch.nonzero(pep_mask[b], as_tuple=False).squeeze(-1)
+                    z0_b = (trans_0[b:b + 1, idx], rot_0[b:b + 1, idx], ang_0[b:b + 1, idx])
+                    z1_b = (trans_1[b:b + 1, idx], rot_1[b:b + 1, idx], ang_1[b:b + 1, idx])
+                    cost_batch[b, :n, :n] = minibatch_ot.pairwise_cost(z0_b, z1_b)[0]
+                    if n < n_max:
+                        pad_rows = diag_arange[n:]
+                        cost_batch[b, pad_rows, pad_rows] = 0.0
+                    idxs[b] = idx
+                    # Snapshot pre-shuffle so the scatter below doesn't read what it just wrote.
+                    srcs[b] = (trans_0[b, idx].clone(), rot_0[b, idx].clone(), ang_0[b, idx].clone())
+
+                # Single batched Hungarian. For B>2 the ThreadPoolExecutor in
+                # solve_ot dispatches scipy calls across threads; for B<=2 this
+                # degenerates to inline solves (identical to pre-refactor behavior).
+                perm_batch = minibatch_ot.solve_ot(cost_batch)  # (B, n_max)
+
+                for b in range(B):
+                    if idxs[b] is None:
+                        continue
+                    n = n_per_b[b]
+                    perm = perm_batch[b, :n]  # values in [0, n) by padding construction
+                    idx = idxs[b]
+                    src_trans, src_rot, src_ang = srcs[b]
+                    trans_0[b, idx] = src_trans[perm]
+                    rot_0[b, idx] = src_rot[perm]
+                    ang_0[b, idx] = src_ang[perm]
 
         
         sigma_min = getattr(self.flow_cfg, 'sigma_min', 1e-4)
@@ -641,6 +678,41 @@ class UniChiFlowModel(nn.Module):
             cfm_loss, sym_loss, seq_loss, sym_weight_override
         )
 
+        # -------- Diagnostic accuracy / error metrics --------
+        # Computed under no_grad to avoid autograd graph extension; these are
+        # logged to TensorBoard for interpretability but do NOT affect the loss
+        # or gradients. Physical units: trans MAE in angstroms (coord_scale
+        # reversed), rot/torsion error in radians (outer logger converts to deg).
+        with torch.no_grad():
+            zero = torch.zeros((), device=aa_1.device)
+            if mask.any():
+                pred_aa = out['pred_seq_logits'].argmax(dim=-1)
+                aa_target = aa_1.clamp(max=self.aatype_vocab - 1)
+                aa_accuracy = (pred_aa[mask] == aa_target[mask]).float().mean()
+
+                # trans_1 is already coord_scale-scaled by corrupt_batch; undo
+                # to report in raw angstroms.
+                trans_mae_scaled = (out['pred_trans_1'] - trans_1)[mask].abs().mean()
+                trans_mae_ang = trans_mae_scaled / max(self.coord_scale, 1e-8)
+
+                rot_err = so3.geodesic_distance(out['pred_rot_1'], rot_1)  # (B, L)
+                rot_err_rad = rot_err[mask].mean()
+
+                ang_diff = torus.tor_logmap(out['pred_ang_1'], ang_1)
+                if 'torsion_angle_mask' in batch:
+                    ang_mask_full = mask.unsqueeze(-1) & batch['torsion_angle_mask'].bool()
+                else:
+                    ang_mask_full = mask.unsqueeze(-1).expand_as(ang_diff)
+                if ang_mask_full.any():
+                    torsion_err_rad = ang_diff.abs()[ang_mask_full].mean()
+                else:
+                    torsion_err_rad = zero
+            else:
+                aa_accuracy = zero
+                trans_mae_ang = zero
+                rot_err_rad = zero
+                torsion_err_rad = zero
+
         return {
             'loss': total,
             'cfm_loss': cfm_loss,
@@ -649,6 +721,11 @@ class UniChiFlowModel(nn.Module):
             'w_cfm': torch.as_tensor(eff_w_cfm),
             'w_sym': torch.as_tensor(eff_w_sym),
             'w_seq': torch.as_tensor(eff_w_seq),
+            # Diagnostic-only (no grad, no impact on training)
+            'aa_accuracy': aa_accuracy,
+            'trans_mae_ang': trans_mae_ang,
+            'rot_err_rad': rot_err_rad,
+            'torsion_err_rad': torsion_err_rad,
         }
 
     @torch.no_grad()

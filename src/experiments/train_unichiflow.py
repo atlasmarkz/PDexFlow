@@ -1,3 +1,4 @@
+import math
 import os
 import time
 
@@ -5,7 +6,6 @@ import hydra
 import torch
 from omegaconf import DictConfig
 from torch import amp
-from torch.nn.utils import clip_grad_norm_
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
@@ -17,6 +17,10 @@ from src.experiments.components import (
     build_optimizer,
     inf_iterator,
 )
+from src.experiments.train_step import StepConfig, do_train_step
+
+
+_RAD2DEG = 180.0 / math.pi
 
 
 config_path = os.path.abspath("configs")
@@ -104,28 +108,13 @@ def main(cfg: DictConfig):
 
     max_grad_value = float(cfg.train.get("max_grad_value", 0.0))
 
-    def _check_and_clip_gradients(parameters):
-        """Fail-loud NaN/Inf detection. Returns True if gradients are finite and safe to step.
-
-        Previous behavior silently replaced NaN/Inf with 0, which hid genuine numerical
-        failures (the next forward would diverge again on the same inputs). Now we detect
-        any non-finite grad, log it, and tell the caller to skip the opt step — the
-        surrounding loop already has bad_step counter + LR decay plumbing.
-        """
-        has_bad = False
-        for p in parameters:
-            if p.grad is None:
-                continue
-            if not torch.isfinite(p.grad).all():
-                has_bad = True
-                break
-        if has_bad:
-            return False
-        if max_grad_value > 0:
-            for p in parameters:
-                if p.grad is not None:
-                    p.grad.clamp_(min=-max_grad_value, max=max_grad_value)
-        return True
+    step_cfg = StepConfig(
+        use_amp=use_amp,
+        amp_device=amp_device,
+        grad_accum_steps=grad_accum_steps,
+        max_grad_norm=float(cfg.train.max_grad_norm),
+        max_grad_value=max_grad_value,
+    )
 
     # Best checkpoint keeper (old name: EarlyStopping — the stop branch almost never fires in practice).
     es_cfg = cfg.train.get('early_stopping', {})
@@ -143,6 +132,7 @@ def main(cfg: DictConfig):
     optim.zero_grad(set_to_none=True)
     global_step = 0
     bad_step = 0
+    total_skips = 0  # cumulative skipped opt steps (loss or grad non-finite), for TB skip_rate
 
     def _decay_lr(factor: float = 0.5, min_lr: float = 1e-7):
         for g in optim.param_groups:
@@ -171,81 +161,48 @@ def main(cfg: DictConfig):
 
         current_sym_weight = get_sym_weight(step)
 
-        with amp.autocast(device_type=amp_device, enabled=use_amp):
-            loss_dict = model(batch, sym_weight_override=current_sym_weight)
-            loss = loss_dict['loss'] / float(grad_accum_steps)
+        outcome = do_train_step(
+            batch=batch,
+            model=model,
+            optim=optim,
+            scaler=scaler,
+            cfg=step_cfg,
+            step=step,
+            sym_weight_override=current_sym_weight,
+        )
 
-        # Skip step if any loss component is non-finite
-        _finite_losses = all(torch.isfinite(v) for v in loss_dict.values()) and torch.isfinite(loss)
-        if not _finite_losses:
+        if outcome.kind == "accum":
+            continue  # mid grad-accum, no opt step this iteration
+
+        if outcome.kind == "skip_loss_nonfinite":
             pbar.set_description("non-finite loss_dict, skipping step")
-            optim.zero_grad(set_to_none=True)
             bad_step += 1
+            total_skips += 1
             if bad_step % 10 == 0:
                 lr_now = _decay_lr()
                 pbar.set_description(f"decay lr -> {lr_now:.2e} (loss nan)")
+            writer.add_scalar('train/skip_rate', total_skips / step, step)
+            writer.add_scalar('train/bad_step_streak', bad_step, step)
             continue
 
-        if not torch.isfinite(loss):
-            pbar.set_description("non-finite loss, skipping step")
-            optim.zero_grad(set_to_none=True)
+        if outcome.kind == "skip_grad_nonfinite":
+            pbar.set_description("non-finite grad (pre-clip), skipping opt step")
+            bad_step += 1
+            total_skips += 1
+            if bad_step % 10 == 0:
+                lr_now = _decay_lr()
+                pbar.set_description(f"decay lr -> {lr_now:.2e} (grad nan)")
+            writer.add_scalar('train/skip_rate', total_skips / step, step)
+            writer.add_scalar('train/bad_step_streak', bad_step, step)
             continue
 
-        scaler.scale(loss).backward()
-
-        if step % grad_accum_steps != 0:
-            continue
-
-        grad = None
-        if use_amp:
-            scaler.unscale_(optim)
-            if not _check_and_clip_gradients(list(model.parameters())):
-                pbar.set_description("non-finite grad (pre-clip), skipping opt step")
-                optim.zero_grad(set_to_none=True)
-                scaler.update()
-                bad_step += 1
-                if bad_step % 10 == 0:
-                    lr_now = _decay_lr()
-                    pbar.set_description(f"decay lr -> {lr_now:.2e} (grad nan)")
-                continue
-            grad = clip_grad_norm_(model.parameters(), float(cfg.train.max_grad_norm))
-            if not torch.isfinite(grad):
-                pbar.set_description("non-finite grad, skipping opt step")
-                # drop this accumulation; reset scaler to avoid stale state
-                optim.zero_grad(set_to_none=True)
-                scaler.update()
-                bad_step += 1
-                if bad_step % 10 == 0:
-                    lr_now = _decay_lr()
-                    pbar.set_description(f"decay lr -> {lr_now:.2e} (grad nan)")
-                continue
-            scaler.step(optim)
-            scaler.update()
-        else:
-            if not _check_and_clip_gradients(list(model.parameters())):
-                pbar.set_description("non-finite grad (pre-clip), skipping opt step")
-                optim.zero_grad(set_to_none=True)
-                bad_step += 1
-                if bad_step % 10 == 0:
-                    lr_now = _decay_lr()
-                    pbar.set_description(f"decay lr -> {lr_now:.2e} (grad nan)")
-                continue
-            grad = clip_grad_norm_(model.parameters(), float(cfg.train.max_grad_norm))
-            if not torch.isfinite(grad):
-                pbar.set_description("non-finite grad, skipping opt step")
-                optim.zero_grad(set_to_none=True)
-                bad_step += 1
-                if bad_step % 10 == 0:
-                    lr_now = _decay_lr()
-                    pbar.set_description(f"decay lr -> {lr_now:.2e} (grad nan)")
-                continue
-            optim.step()
-        optim.zero_grad(set_to_none=True)
-
+        # outcome.kind == "ok"
         global_step += 1
+        raw_loss = outcome.loss
+        grad = outcome.grad_norm
+        components = outcome.components
 
         # Update smoothed loss for early stopping
-        raw_loss = loss_dict['loss'].item()
         if smooth_loss is None:
             smooth_loss = raw_loss
         else:
@@ -253,19 +210,32 @@ def main(cfg: DictConfig):
 
         pbar.set_description(
             f"loss {raw_loss:.4f} (sm: {smooth_loss:.4f}) | "
-            f"cfm {loss_dict['cfm_loss'].item():.3f}*{loss_dict.get('w_cfm', torch.tensor(0.0)).item():.1e} | "
-            f"sym {loss_dict['sym_loss'].item():.3f}*{loss_dict.get('w_sym', torch.tensor(0.0)).item():.1e} | "
-            f"seq {loss_dict['seq_loss'].item():.3f}*{loss_dict.get('w_seq', torch.tensor(0.0)).item():.1e} | "
+            f"cfm {components['cfm_loss']:.3f}*{components.get('w_cfm', 0.0):.1e} | "
+            f"sym {components['sym_loss']:.3f}*{components.get('w_sym', 0.0):.1e} | "
+            f"seq {components['seq_loss']:.3f}*{components.get('w_seq', 0.0):.1e} | "
             f"g {grad:.1f}"
         )
 
         writer.add_scalar('train/loss', raw_loss, global_step)
         writer.add_scalar('train/smooth_loss', smooth_loss, global_step)
-        writer.add_scalar('train/cfm_loss', loss_dict['cfm_loss'].item(), global_step)
-        writer.add_scalar('train/sym_loss', loss_dict['sym_loss'].item(), global_step)
-        writer.add_scalar('train/seq_loss', loss_dict['seq_loss'].item(), global_step)
+        writer.add_scalar('train/cfm_loss', components['cfm_loss'], global_step)
+        writer.add_scalar('train/sym_loss', components['sym_loss'], global_step)
+        writer.add_scalar('train/seq_loss', components['seq_loss'], global_step)
         writer.add_scalar('train/grad_norm', grad, global_step)
         writer.add_scalar('train/lr', optim.param_groups[0]['lr'], global_step)
+        # Interpretable diagnostic metrics (computed under no_grad in the model;
+        # radians → degrees conversion only happens here, not in the hot forward path).
+        if 'aa_accuracy' in components:
+            writer.add_scalar('train/aa_accuracy', components['aa_accuracy'], global_step)
+        if 'trans_mae_ang' in components:
+            writer.add_scalar('train/trans_mae_ang', components['trans_mae_ang'], global_step)
+        if 'rot_err_rad' in components:
+            writer.add_scalar('train/rot_err_deg', components['rot_err_rad'] * _RAD2DEG, global_step)
+        if 'torsion_err_rad' in components:
+            writer.add_scalar('train/torsion_err_deg', components['torsion_err_rad'] * _RAD2DEG, global_step)
+        # skip health — indexed by `step` (attempts) not `global_step` (successful steps)
+        writer.add_scalar('train/skip_rate', total_skips / step, step)
+        writer.add_scalar('train/bad_step_streak', bad_step, step)
 
         bad_step = 0  # reset on successful step
 

@@ -15,7 +15,7 @@ model:
   n_layers: 6
   n_heads: 8
   dropout: 0.0
-  max_len: 512
+  max_len: 1024
   aatype_vocab: 21
   angle_dim: 5
 
