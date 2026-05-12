@@ -13,33 +13,25 @@ from src.data.pep_dataloader import PepDataset
 def preprocess_real_d_structure(task, x_mirror=False):
     try:
         pdb_path = task['pdb_path']
-        # Parse the single PDB file
-        # We assume the file contains the peptide (and maybe other things we ignore)
         parsed_data = parse_pdb(pdb_path, x_mirror=x_mirror)[0]
-        
+
         if parsed_data is None or parsed_data['aa'].numel() == 0:
             raise ValueError("No chains found in PDB")
 
-        # Heuristic: Find the first chain that looks like a peptide
-        # parsed_data contains all residues from all chains flattened.
-        # We need to group by chain_nb.
-        
         unique_chains = torch.unique(parsed_data['chain_nb'])
         pep_chain_idx = -1
         pep_chain_len = 1e9
 
-        # Choose the shortest valid chain (len >=3) as peptide to avoid picking receptor chains
         for chain_idx in unique_chains:
             mask = parsed_data['chain_nb'] == chain_idx
             chain_len = mask.sum().item()
             if chain_len >= 3 and chain_len < pep_chain_len:
                 pep_chain_idx = chain_idx
                 pep_chain_len = chain_len
-        
+
         if pep_chain_idx == -1:
             raise ValueError("No valid peptide chain found (len >= 3)")
 
-        # Extract peptide data
         mask = parsed_data['chain_nb'] == pep_chain_idx
         pep = {}
         for k in parsed_data.keys():
@@ -50,20 +42,18 @@ def preprocess_real_d_structure(task, x_mirror=False):
             else:
                 pep[k] = parsed_data[k]
 
-        # Process peptide and find center of mass
-        center = torch.sum(pep['pos_heavyatom'][pep['mask_heavyatom'][:, BBHeavyAtom.CA], BBHeavyAtom.CA], dim=0) / (torch.sum(pep['mask_heavyatom'][:, BBHeavyAtom.CA]) + 1e-8)
-        pep['pos_heavyatom'] -= center[None, None, :]   # translate pep center
-        pep['torsion_angle'], pep['torsion_angle_mask'] = get_torsion_angle(pep['pos_heavyatom'], pep['aa'])  # calc angles after translation
+        if any(a >= 20 for a in pep['aa'].tolist()):
+            raise ValueError("Peptide contains UNK residues")
 
-        # Create empty receptor data
-        # We need to provide empty tensors for receptor to match the expected format
-        # or just rely on generate_mask
-        
-        # Construct data dict
-        # generate_mask: 1 for peptide (generated), 0 for receptor (fixed)
-        # Since we have no receptor, it's all 1s
+        center = torch.sum(pep['pos_heavyatom'][pep['mask_heavyatom'][:, BBHeavyAtom.CA], BBHeavyAtom.CA], dim=0) / (torch.sum(pep['mask_heavyatom'][:, BBHeavyAtom.CA]) + 1e-8)
+        pep['pos_heavyatom'] -= center[None, None, :]
+        pep['torsion_angle'], pep['torsion_angle_mask'] = get_torsion_angle(pep['pos_heavyatom'], pep['aa'])
+
+        if not torch.all(torch.isfinite(pep['torsion_angle'])):
+            raise ValueError("NaN/Inf in torsion angles")
+
         generate_mask = torch.ones_like(pep['aa'], dtype=torch.bool)
-        
+
         data = {
             'id': task['id'],
             'generate_mask': generate_mask,
@@ -76,13 +66,9 @@ def preprocess_real_d_structure(task, x_mirror=False):
             'res_nb': pep['res_nb'],
             'resseq': pep['resseq'],
             'icode': pep['icode'],
-            'chain_nb': torch.tensor([0]), # Dummy chain nb
+            'chain_nb': torch.tensor([0]),
         }
-        
-        # Add chirality token: 1 for D-peptide
-        # This will be added in __getitem__ usually, but we can add it here or in the dataset wrapper
-        # The TwinUniversePepDataset adds it in __getitem__.
-        
+
         return data
 
     except Exception as e:

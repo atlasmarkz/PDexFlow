@@ -33,6 +33,17 @@ def build_dataset(cfg: DictConfig, kind: DatasetKind) -> Dataset:
     unification) will revisit this.
     """
     if kind == "pepmerge":
+        use_pure_chirality = bool(cfg.data.get("use_pure_chirality", False))
+        if use_pure_chirality:
+            pure_chirality = cfg.data.get("pure_chirality", "L")
+            x_mirror = (pure_chirality == "D")
+            return PepDataset(
+                structure_dir=str(cfg.data.structure_dir),
+                cache_dir=str(cfg.data.cache_dir),
+                name=f"pepmerge_{cfg.data.split}_pure_{pure_chirality}",
+                x_mirror=x_mirror,
+                reset=bool(cfg.data.reset_cache),
+            )
         use_subset = bool(cfg.data.get("use_subset", False))
         if use_subset:
             fraction = float(cfg.data.get("subset_fraction", 0.3))

@@ -78,29 +78,47 @@ class PaddingCollate(object):
         return default_collate(data_list_padded)
 
 
+def _is_valid_sample(data) -> bool:
+    """Check if a preprocessed sample has valid geometry (no NaN/Inf)."""
+    checks = [
+        ('pos_heavyatom', data['pos_heavyatom']),
+        ('torsion_angle', data['torsion_angle']),
+    ]
+    for name, tensor in checks:
+        if not torch.all(torch.isfinite(tensor)):
+            return False
+    pep_len = data['generate_mask'].sum().item()
+    if pep_len < 3 or pep_len > 25:
+        return False
+    return True
+
+
 def preprocess_structure(task, x_mirror=False):
     try:
         pdb_path = task['pdb_path']
-        # pep
-        # process peptide and find center of mass
         pep = parse_pdb(os.path.join(pdb_path, 'peptide.pdb'), x_mirror=x_mirror)[0]
         if pep is None:
             raise ValueError("Failed to parse peptide.pdb (empty or invalid)")
+
         center = torch.sum(pep['pos_heavyatom'][pep['mask_heavyatom'][:, BBHeavyAtom.CA], BBHeavyAtom.CA], dim=0) / (torch.sum(pep['mask_heavyatom'][:, BBHeavyAtom.CA]) + 1e-8)
-        pep['pos_heavyatom'] -= center[None, None, :]   # translate pep center
-        pep['torsion_angle'], pep['torsion_angle_mask'] = get_torsion_angle(pep['pos_heavyatom'], pep['aa'])  # calc angles after translation
-        if len(pep['aa']) < 3 or len(pep['aa']) > 25:   # ignore too short or too long pep
+        pep['pos_heavyatom'] -= center[None, None, :]
+        pep['torsion_angle'], pep['torsion_angle_mask'] = get_torsion_angle(pep['pos_heavyatom'], pep['aa'])
+
+        if len(pep['aa']) < 3 or len(pep['aa']) > 25:
             raise ValueError('peptide length not in [3,25]')
 
-        # rec
+        pep_aa_set = set(pep['aa'].tolist())
+        unk_in_pep = any(a >= 20 for a in pep_aa_set)
+        if unk_in_pep:
+            raise ValueError(f'peptide contains UNK residues: {pep_aa_set}')
+
         rec = parse_pdb(os.path.join(pdb_path, 'pocket.pdb'), x_mirror=x_mirror)[0]
         if rec is None:
             raise ValueError("Failed to parse pocket.pdb (empty or invalid)")
-        rec['pos_heavyatom'] = rec['pos_heavyatom'] - center[None, None, :]     # translate pep center
-        rec['torsion_angle'], rec['torsion_angle_mask'] = get_torsion_angle(rec['pos_heavyatom'], rec['aa'])  # calc angles after translation
+        rec['pos_heavyatom'] = rec['pos_heavyatom'] - center[None, None, :]
+        rec['torsion_angle'], rec['torsion_angle_mask'] = get_torsion_angle(rec['pos_heavyatom'], rec['aa'])
         rec['chain_nb'] += 1
 
-        # meta data
         data = {'id': task['id'], 'generate_mask': torch.cat([torch.zeros_like(rec['aa']), torch.ones_like(pep['aa'])], dim=0).bool()}
         for k in rec.keys():
             if isinstance(rec[k], torch.Tensor):
@@ -109,6 +127,10 @@ def preprocess_structure(task, x_mirror=False):
                 data[k] = rec[k] + pep[k]
             else:
                 raise ValueError(f'Unknown type of {rec[k]}')
+
+        if not _is_valid_sample(data):
+            raise ValueError('invalid geometry (NaN/Inf) in preprocessed data')
+
         return data
     except (PDBExceptions.PDBConstructionException, KeyError, ValueError, TypeError) as e:
         logging.warning('[{}] {}: {}'.format(task['id'], e.__class__.__name__, str(e)))
@@ -188,6 +210,10 @@ class PepDataset(Dataset):
 
         data_list = joblib.Parallel(n_jobs=max(joblib.cpu_count() // 2, 1), )(
             joblib.delayed(preprocess_structure)(task, self.x_mirror) for task in tqdm(tasks, dynamic_ncols=True, desc='Preprocess'))
+
+        valid_count = sum(1 for d in data_list if d is not None)
+        total_count = len(data_list)
+        logging.info(f'[Preprocess] {valid_count}/{total_count} valid samples ({total_count - valid_count} filtered)')
 
         db_conn = lmdb.open(self._cache_db_path, map_size=self.MAP_SIZE, create=True, subdir=False, readonly=False, )
         ids = []

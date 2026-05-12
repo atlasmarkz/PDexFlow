@@ -58,15 +58,24 @@ def preprocess_pepmerge(task: Dict):
         if rec_data is None or rec_data['aa'].numel() == 0:
             raise ValueError("Receptor parse failed")
 
-        # center coords on peptide
+        if any(a >= 20 for a in pep_data['aa'].tolist()):
+            raise ValueError("Peptide contains UNK residues")
+
         pep_data, rec_data = _center_on_peptide(pep_data, rec_data)
         pep_data['torsion_angle'], pep_data['torsion_angle_mask'] = get_torsion_angle(pep_data['pos_heavyatom'], pep_data['aa'])
+
+        if not torch.all(torch.isfinite(pep_data['torsion_angle'])):
+            raise ValueError("NaN/Inf in peptide torsion angles")
 
         merged, gen_mask = _stack_pep_rec(pep_data, rec_data)
         merged['generate_mask'] = gen_mask
         merged['torsion_angle'] = torch.cat([pep_data['torsion_angle'], torch.zeros_like(rec_data['aa'], dtype=torch.float32).unsqueeze(-1).repeat(1, pep_data['torsion_angle'].shape[1])], dim=0)
         merged['torsion_angle_mask'] = torch.cat([pep_data['torsion_angle_mask'], torch.zeros_like(rec_data['aa'], dtype=torch.bool).unsqueeze(-1).repeat(1, pep_data['torsion_angle_mask'].shape[1])], dim=0)
         merged['id'] = task['id']
+
+        if not torch.all(torch.isfinite(merged['pos_heavyatom'])):
+            raise ValueError("NaN/Inf in merged positions")
+
         return merged
     except Exception as e:
         logging.warning('[{}] {}: {}'.format(task['id'], e.__class__.__name__, str(e)))

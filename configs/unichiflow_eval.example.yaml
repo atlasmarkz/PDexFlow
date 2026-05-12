@@ -1,6 +1,10 @@
 # UniChiFlow comprehensive evaluation config
 # Copy to config.yaml and modify paths as needed
 
+hydra:
+  run:
+    dir: outputs/logs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
 train:
   seed: 2024
   device: cuda

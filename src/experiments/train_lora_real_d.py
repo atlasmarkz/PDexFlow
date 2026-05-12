@@ -32,9 +32,9 @@ def main(cfg: DictConfig):
         device = "cpu"
 
     run_name = time.strftime("%Y_%m_%d__%H_%M_%S", time.localtime())
-    out_dir = os.path.join(str(cfg.train.logdir), run_name)
-    ckpt_dir = os.path.join(out_dir, "checkpoints")
-    os.makedirs(ckpt_dir, exist_ok=True)
+    out_dir = os.path.join(str(cfg.train.logdir), "checkpoints", run_name)
+    model_dir = os.path.join(out_dir, "model")
+    os.makedirs(model_dir, exist_ok=True)
 
     ds = build_dataset(cfg, kind="real_d")
     loader = build_dataloader(ds, cfg, eight=True)
@@ -133,7 +133,7 @@ def main(cfg: DictConfig):
             # Save best model
             if loss_val < best_loss:
                 best_loss = loss_val
-                ckpt_path = os.path.join(ckpt_dir, "best_model.pt")
+                ckpt_path = os.path.join(model_dir, "best_model.pt")
                 torch.save({
                     'config': cfg,
                     'model': model.state_dict(),
@@ -143,7 +143,7 @@ def main(cfg: DictConfig):
                 }, ckpt_path)
 
             if step % int(cfg.train.save_freq) == 0:
-                ckpt_path = os.path.join(ckpt_dir, f"{step}.pt")
+                ckpt_path = os.path.join(model_dir, f"{step}.pt")
                 torch.save({
                     'config': cfg,
                     'model': model.state_dict(),

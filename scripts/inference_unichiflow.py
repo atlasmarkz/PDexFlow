@@ -61,10 +61,10 @@ def main(cfg: DictConfig):
     
     # Base output dir from config or command line
     base_out_dir = str(sam.output_dir)
-    # Ensure it saves into unichiflow_output/timestamp/
-    if "unichiflow_output" not in base_out_dir:
-         # Fallback if user provides a weird path, though usually they provide unichiflow_output
-         base_out_dir = os.path.join(os.path.dirname(base_out_dir), "unichiflow_output")
+    # Ensure it saves into peptides/timestamp/
+    if "peptides" not in base_out_dir:
+         # Fallback if user provides a weird path, though usually they provide peptides
+         base_out_dir = os.path.join(os.path.dirname(base_out_dir), "peptides")
     
     # Create the timestamped subdirectory
     out_dir = os.path.join(base_out_dir, timestamp)

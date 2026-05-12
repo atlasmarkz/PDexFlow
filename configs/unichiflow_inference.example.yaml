@@ -56,7 +56,7 @@ sample:
   device: cuda
   num_samples: 5
   num_steps: 50
-  output_dir: outputs/inference
+  output_dir: outputs/peptides
   chirality_token: 1                  # 0 = L-peptide, 1 = D-peptide
   use_hard_decoder: true
   gen_receptor: false
