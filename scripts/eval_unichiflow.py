@@ -25,7 +25,7 @@ from src.models.chiralformer import UniChiFlowModel
 from src.experiments.components import resolve_inference_device
 
 config_path = os.path.abspath("configs")
-config_name = "unichiflow_eval.yaml"
+config_name = "unichiflow_inference.yaml"
 
 
 def _device_sync(device: str):

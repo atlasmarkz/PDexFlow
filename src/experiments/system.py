@@ -33,15 +33,12 @@ class UniChiFlowSystem(pl.LightningModule):
         )
 
     def setup(self, stage: Optional[str] = None):
-        # Module 1: Data Loading with Twin-Universe Strategy
         if stage == "fit" or stage is None:
             self.train_dataset = TwinUniversePepDataset(
                 structure_dir=str(self.cfg.data.structure_dir),
                 cache_dir=str(self.cfg.data.cache_dir),
                 split_name=f"pepmerge_{self.cfg.data.split}",
-                mirror_prob=float(self.cfg.data.twin_universe_prob),
                 reset=bool(self.cfg.data.get("reset_cache", False)),
-                deterministic_pairs=bool(self.cfg.data.get("deterministic_pairs", False)),
             )
 
     def train_dataloader(self):

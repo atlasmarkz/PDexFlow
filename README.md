@@ -35,10 +35,13 @@ unidexflow/
 │   ├── data/             # Data loading, geometry, torsion conversion
 │   ├── models/           # Model architecture (ChiralFormer, ChiLoRA)
 │   ├── analysis/        # Analysis utilities and metrics
-│   └── flow.py           # Core flow matching logic
-├── configs/              # Hydra configuration templates (*.example.yaml)
+│   └── flow.py           # Core flow matching logic (PH-Flow)
+├── configs/              # Hydra configuration templates
 ├── experiments/          # Training scripts
 ├── scripts/              # Inference and evaluation scripts
+│   ├── analyze_dataset.py       # Dataset distribution analysis
+│   ├── generate_mirrored_dataset.py  # Generate mirrored D-peptide dataset
+│   └── plot_ramachandran_from_npz.py  # Ramachandran plot from cached data
 ├── tests/                # Unit tests
 └── outputs/              # Training outputs (gitignored)
 ```
@@ -64,30 +67,42 @@ cp configs/unichiflow_backbone.example.yaml configs/config.yaml
 
 ### 1. Training
 
-UniChiflow supports two-stage training (Pre-training on L-peptides -> Fine-tuning on D-peptides with LoRA) or direct training.
+UniChiflow supports pure L-peptide training with PH-Flow symmetry loss sufficient for generating both L and D peptides.
 
-**Fine-tuning with LoRA (recommended for D-peptides):**
+**Pure L Training (Recommended):**
 ```bash
-python -W ignore -m src.experiments.train_lora_real_d \
+python -W ignore -m src.experiments.train_unichiflow \
     --config-path configs \
-    --config-name unichiflow_lora
+    --config-name unichiflow_pure_L
 ```
 
-**Standard Training:**
+**Standard Training (with TwinUniverseDataset):**
 ```bash
 python -W ignore -m src.experiments.train_unichiflow \
     --config-path configs \
     --config-name unichiflow_backbone
 ```
 
-Override paths via CLI:
+**Fine-tuning with LoRA (for D-peptides):**
 ```bash
-python -W ignore -m src.experiments.train_unichiflow \
-    data.structure_dir=/path/to/structures \
-    sample.ckpt_path=/path/to/checkpoint.pt
+python -W ignore -m src.experiments.train_lora_real_d \
+    --config-path configs \
+    --config-name unichiflow_training
 ```
 
-### 2. Inference (Generation)
+### 2. Generate Mirrored D-Peptide Dataset (Optional)
+
+Generate X-axis mirrored (x, y, z) → (-x, y, z) D-peptide dataset for comparative training:
+
+```bash
+python scripts/generate_mirrored_dataset.py \
+    --input_dir data/pepmerge \
+    --output_dir data/pepmerge_mirrored
+```
+
+This creates a separate mirrored dataset for pure L vs pure D training comparison.
+
+### 3. Inference (Generation)
 
 Generate D-peptide candidates for a given receptor target. The model outputs `.pdb` files with correct D-amino acid nomenclature (DAL, DGL, etc.).
 
@@ -99,7 +114,11 @@ python -W ignore -m src.scripts.inference_unichiflow \
     sample.ckpt_path=/path/to/checkpoint.pt
 ```
 
-### 3. Evaluation
+**Chirality Control at Inference:**
+- `chirality=0` → generates L-peptide
+- `chirality=1` → generates D-peptide (via Hard Geometric Decoder mirror)
+
+### 4. Evaluation
 
 We provide a comprehensive PyRosetta-based evaluation suite that measures geometric validity, biological plausibility, and binding affinity. The evaluation pipeline automatically handles D-peptide flipping to ensure accurate energy calculation in standard forcefields.
 
@@ -125,12 +144,32 @@ python -W ignore -m src.scripts.summarize_sensitivity \
 *   **Stb (Stability)**: Rosetta energy-based stability score (calculated in standardized L-space).
 *   **Aff (Affinity)**: Interaction energy (ΔG) with the receptor.
 
+## Data Analysis
+
+Analyze dataset distribution (length, amino acid composition, Ramachandran plots, etc.):
+
+```bash
+# Full analysis
+python scripts/analyze_dataset.py --max_samples 10348
+
+# Quick analysis with fewer samples
+python scripts/analyze_dataset.py --max_samples 500
+
+# Plot Ramachandran from cached npz (faster)
+python scripts/plot_ramachandran_from_npz.py
+```
+
+Outputs are saved to `outputs/analysis/` with:
+- `peptide/` - Peptide statistics and plots
+- `receptor/` - Receptor statistics and plots
+- `dataset_distribution_data.npz` - Cached raw data for fast replotting
+
 ## Ablations & Configurations
 
 You can toggle core components via Hydra CLI flags:
 
 - **Disable Symmetry Loss**: `flow.sym_weight=0.0`
-- **Disable Chiral-Bridge**: `chi_lora.enable=false esm.use_adapter=false`
+- **Disable Chiral-Bridge**: `chi_lora.enable=false esm.enable=false`
 - **Disable OT**: `flow.use_ot=false`
 - **Disable Hard Decoder (Ablation testing)**: `sample.use_hard_decoder=false` (Note: This will result in high Chiral Error).
 
@@ -154,6 +193,25 @@ mypy src/
 - **Metrics** (`metrics/`) — Experiment result CSVs, gitignored. Add your own results for local reference.
 - **Checkpoints** — Saved to `outputs/` or `outputs_lora/`, gitignored.
 - **Cache** (`.cache/`) — LMDB databases auto-generated from PDB structures, gitignored.
+- **Mirrored Dataset** (`data/pepmerge_mirrored/`) — X-axis mirrored D-peptide data, gitignored.
+
+## Training Strategy Explanation
+
+### PH-Flow Symmetry Loss
+
+The symmetry consistency loss (`sym_loss`) in PH-Flow enforces parity equivariance:
+
+```
+sym_loss: P(v(x_t)) = v(P(x_t))
+```
+
+Where `P` is the parity transformation (position flip, rotation mirror, angle negation). This allows the model to learn both L and D generation from pure L training data.
+
+### Hard Geometric Decoder
+
+The decoder applies chirality transformation during coordinate reconstruction:
+- For D residues (`chirality=1`): `rot @ diag(-1,-1,1)` and `angles * -1`
+- This guarantees **0% chiral error** by construction
 
 ## License
 

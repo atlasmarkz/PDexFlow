@@ -9,6 +9,7 @@ code used to perform — pre-existing inconsistencies between the two scripts
 (e.g. backbone passes cfm_weight/sym_weight, LoRA does not) are preserved
 here via explicit flags so they can be unified later in a dedicated pass.
 """
+import os
 from typing import Literal
 
 import torch
@@ -16,8 +17,7 @@ from omegaconf import DictConfig
 from torch.utils.data import DataLoader, Dataset
 
 from src.checkpoint import load_backbone_into_lora
-from src.data.pep_dataloader import PaddingCollate, TwinUniversePepDataset
-from src.data.pepmerge_dataset import PepMergeSubsetDataset
+from src.data.pep_dataloader import DualPepDataset, PaddingCollate, TwinUniversePepDataset
 from src.data.real_d_pep_dataset import RealDPepDataset
 from src.models.chiralformer import UniChiFlowModel
 
@@ -33,36 +33,26 @@ def build_dataset(cfg: DictConfig, kind: DatasetKind) -> Dataset:
     unification) will revisit this.
     """
     if kind == "pepmerge":
-        use_pure_chirality = bool(cfg.data.get("use_pure_chirality", False))
-        if use_pure_chirality:
-            pure_chirality = cfg.data.get("pure_chirality", "L")
-            x_mirror = (pure_chirality == "D")
-            return PepDataset(
-                structure_dir=str(cfg.data.structure_dir),
-                cache_dir=str(cfg.data.cache_dir),
-                name=f"pepmerge_{cfg.data.split}_pure_{pure_chirality}",
-                x_mirror=x_mirror,
+        structure_dir_D = str(cfg.data.get("structure_dir_D", cfg.data.structure_dir))
+        cache_dir_D = str(cfg.data.get("cache_dir_D", cfg.data.cache_dir))
+        has_mirrored_cache = os.path.exists(os.path.join(cache_dir_D, 'pepmerge_mirrored_structure_cache.lmdb'))
+        has_x_mirror_cache = os.path.exists(os.path.join(cache_dir_D, 'pepmerge_train_structure_x_cache.lmdb'))
+        if structure_dir_D != str(cfg.data.structure_dir) and (has_mirrored_cache or has_x_mirror_cache):
+            name_D = 'pepmerge_mirrored' if has_mirrored_cache else 'pepmerge'
+            return DualPepDataset(
+                structure_dir_L=str(cfg.data.structure_dir),
+                structure_dir_D=structure_dir_D,
+                cache_dir_L=str(cfg.data.cache_dir),
+                cache_dir_D=cache_dir_D,
+                name_L="pepmerge",
+                name_D=name_D,
                 reset=bool(cfg.data.reset_cache),
-            )
-        use_subset = bool(cfg.data.get("use_subset", False))
-        if use_subset:
-            fraction = float(cfg.data.get("subset_fraction", 0.3))
-            mirror_prob = float(cfg.data.get("subset_mirror_prob", 1.0))
-            return PepMergeSubsetDataset(
-                structure_dir=str(cfg.data.structure_dir),
-                cache_dir=str(cfg.data.cache_dir),
-                name=f"pepmerge_subset_{fraction}",
-                reset=bool(cfg.data.reset_cache),
-                fraction=fraction,
-                mirror_prob=mirror_prob,
             )
         return TwinUniversePepDataset(
             structure_dir=str(cfg.data.structure_dir),
             cache_dir=str(cfg.data.cache_dir),
             split_name=f"pepmerge_{cfg.data.split}",
-            mirror_prob=float(cfg.data.twin_universe_prob),
             reset=bool(cfg.data.reset_cache),
-            deterministic_pairs=bool(cfg.data.get("deterministic_pairs", False)),
         )
     if kind == "real_d":
         return RealDPepDataset(

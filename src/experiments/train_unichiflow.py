@@ -23,8 +23,8 @@ from src.experiments.train_step import StepConfig, do_train_step
 _RAD2DEG = 180.0 / math.pi
 
 
-config_path = os.path.abspath("configs")
-config_name = "unichiflow_backbone.yaml"
+config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "configs"))
+config_name = "unichiflow_training.yaml"
 
 
 class BestCheckpointKeeper:
@@ -141,25 +141,18 @@ def main(cfg: DictConfig):
             g['lr'] = new_lr
         return optim.param_groups[0]['lr']
 
-    target_sym_weight = float(cfg.flow.get("sym_weight", 1.0))
-    # Configurable warmup
-    warmup_enable = bool(cfg.flow.get("sym_warmup_enable", True))
-    warmup_start = int(cfg.flow.get("sym_warmup_start", 500))
-    warmup_end = int(cfg.flow.get("sym_warmup_end", 2000))
-
-    def get_sym_weight(s):
-        if not warmup_enable: return target_sym_weight
-        if s < warmup_start: return 0.0
-        if s >= warmup_end: return target_sym_weight
-        return target_sym_weight * (s - warmup_start) / (warmup_end - warmup_start)
+    current_sym_weight = float(cfg.flow.get("sym_weight", 1.0))
 
     for step in pbar:
         batch = du.recursive_to(next(it), device)
-        # NOTE: Coordinate scaling (×0.1) is now performed inside UniChiFlowModel
-        # (corrupt_batch / sample) via self.coord_scale. Scripts must pass raw PDB
-        # angstroms in batch['pos_heavyatom']; do NOT pre-scale here.
 
-        current_sym_weight = get_sym_weight(step)
+        # Debug: print batch data ranges every 5 steps
+        if step % 5 == 0:
+            pos = batch['pos_heavyatom']
+            aa = batch['aa']
+            gen_mask = batch['generate_mask']
+            res_mask = batch['res_mask']
+            print(f"[Step {step}] BATCH | pos_range=[{pos.min():.3f}, {pos.max():.3f}] pos_finite={pos.isfinite().all().item()} | aa_unique={aa.unique().numel()} | pep_len={gen_mask.sum().item()} | res_len={res_mask.sum().item()} | device={pos.device}")
 
         outcome = do_train_step(
             batch=batch,
@@ -175,6 +168,12 @@ def main(cfg: DictConfig):
             continue  # mid grad-accum, no opt step this iteration
 
         if outcome.kind == "skip_loss_nonfinite":
+            # Log which loss component is non-finite for debugging
+            cfm = outcome.components.get('cfm_loss', float('nan'))
+            sym = outcome.components.get('sym_loss', float('nan'))
+            seq = outcome.components.get('seq_loss', float('nan'))
+            total = outcome.loss
+            print(f"[Step {step}] SKIP loss_nonfinite | cfm={cfm} sym={sym} seq={seq} | total={total}")
             pbar.set_description("non-finite loss_dict, skipping step")
             bad_step += 1
             total_skips += 1
@@ -186,6 +185,11 @@ def main(cfg: DictConfig):
             continue
 
         if outcome.kind == "skip_grad_nonfinite":
+            cfm = outcome.components.get('cfm_loss', float('nan'))
+            sym = outcome.components.get('sym_loss', float('nan'))
+            seq = outcome.components.get('seq_loss', float('nan'))
+            total = outcome.loss
+            print(f"[Step {step}] SKIP grad_nonfinite | cfm={cfm} sym={sym} seq={seq} | total={total}")
             pbar.set_description("non-finite grad (pre-clip), skipping opt step")
             bad_step += 1
             total_skips += 1
@@ -201,6 +205,9 @@ def main(cfg: DictConfig):
         raw_loss = outcome.loss
         grad = outcome.grad_norm
         components = outcome.components
+
+        if step % 5 == 0:
+            print(f"[Step {step}] OK | loss={raw_loss:.4f} | cfm={components.get('cfm_loss', 0):.4f} sym={components.get('sym_loss', 0):.4f} seq={components.get('seq_loss', 0):.4f} | grad={grad:.4f}")
 
         # Update smoothed loss for early stopping
         if smooth_loss is None:

@@ -235,6 +235,41 @@ class PepDataset(Dataset):
         return data
 
 
+class DualPepDataset(Dataset):
+    """Paired L / D dataset for parity-consistency training.
+
+    Takes two pre-processed LMDB caches (from ``pepmerge`` and ``pepmerge_mirrored``)
+    and returns deterministic L/D pairs at the same index:
+      - chirality=0: L-peptide from ``structure_dir_L``
+      - chirality=1: D-peptide from ``structure_dir_D``
+
+    The two caches must have identical ``db_ids`` ordering (same PDB entries).
+    """
+
+    MAP_SIZE = 32 * (1024 * 1024 * 1024)
+
+    def __init__(self, structure_dir_L: str, structure_dir_D: str, cache_dir_L: str, cache_dir_D: str, name_L: str = 'pepmerge', name_D: str = 'pepmerge_mirrored', reset: bool = False):
+        super().__init__()
+        self.ds_L = PepDataset(structure_dir=structure_dir_L, dataset_dir=cache_dir_L, name=name_L, reset=reset)
+        self.ds_D = PepDataset(structure_dir=structure_dir_D, dataset_dir=cache_dir_D, name=name_D, reset=reset)
+
+    def __len__(self):
+        return len(self.ds_L)
+
+    def __getitem__(self, index):
+        sample_L = dict(self.ds_L[index])
+        sample_D = dict(self.ds_D[index])
+
+        assert sample_L.keys() == sample_D.keys(), \
+            f"Key mismatch at index {index} ({sample_L.get('id', '?')}): L has {sample_L.keys()} but D has {sample_D.keys()}"
+
+        sample_L['chirality'] = torch.tensor(0, dtype=torch.long)
+        sample_D['chirality'] = torch.tensor(1, dtype=torch.long)
+
+        sample = {**sample_L, **sample_D}
+        return sample
+
+
 class TwinUniversePepDataset(Dataset):
     """Twin-Universe dataset wrapper.
 
@@ -244,34 +279,18 @@ class TwinUniversePepDataset(Dataset):
       - 1: D / mirrored
     """
 
-    def __init__(self, structure_dir: str, cache_dir: str, split_name: str, mirror_prob: float = 0.5, reset: bool = False,
-             deterministic_pairs: bool = False):
+    def __init__(self, structure_dir: str, cache_dir: str, split_name: str, reset: bool = False):
         super().__init__()
-        self.mirror_prob = float(mirror_prob)
-        self.deterministic_pairs = bool(deterministic_pairs)
         self.ds_L = PepDataset(structure_dir=structure_dir, dataset_dir=cache_dir, name=split_name, x_mirror=False, reset=reset)
         self.ds_D = PepDataset(structure_dir=structure_dir, dataset_dir=cache_dir, name=split_name, x_mirror=True, reset=reset)
 
     def __len__(self):
-        if self.deterministic_pairs:
-            return len(self.ds_L) * 2  # cover all L and all mirrored D
         return len(self.ds_L)
 
     def __getitem__(self, index):
-        if self.deterministic_pairs:
-            # first half L, second half D (same index range)
-            N = len(self.ds_L)
-            if index < N:
-                use_mirror = False
-                sample = self.ds_L[index]
-            else:
-                use_mirror = True
-                sample = self.ds_D[index - N]
-        else:
-            use_mirror = torch.rand(()) < self.mirror_prob
-            sample = self.ds_D[index] if use_mirror else self.ds_L[index]
+        use_mirror = torch.rand(()) < 0.5
+        sample = self.ds_D[index] if use_mirror else self.ds_L[index]
 
-        # add chirality token (B will be added by collate)
         sample = dict(sample)
         sample['chirality'] = torch.tensor(int(use_mirror), dtype=torch.long)
         return sample

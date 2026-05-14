@@ -21,7 +21,7 @@ from src.experiments.components import (
 )
 
 config_path = os.path.join(os.path.dirname(__file__), "..", "..", "configs")
-config_name = "unichiflow_lora.yaml"
+config_name = "unichiflow_training.yaml"
 
 @hydra.main(version_base=None, config_path=config_path, config_name=config_name)
 def main(cfg: DictConfig):
