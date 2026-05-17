@@ -8,42 +8,16 @@ import torch
 import torch.nn.functional as F
 
 from src.data import so3, torus
-
-
-PARITY_FLIP = torch.diag(torch.tensor([1.0, 1.0, -1.0]))
-PARITY_SO3 = torch.diag(torch.tensor([-1.0, -1.0, 1.0]))
+from src.data.parity import (
+    apply_parity_state,
+    parity_positions,
+    parity_rotvec,
+    parity_torsions,
+)
 
 
 def safe_norm(x: torch.Tensor, dim: int = -1, keepdim: bool = False, eps: float = 1e-8) -> torch.Tensor:
-	return torch.sqrt(torch.clamp(torch.sum(x * x, dim=dim, keepdim=keepdim), min=eps))
-
-
-def parity_positions(x: torch.Tensor) -> torch.Tensor:
-	# XY-flip (diag(-1, -1, +1)) — matches the dataset mirror at
-	# `pepmerge_dataset.py` (`pos * [-1,-1,1]`) and the Hard Decoder's
-	# `R @ diag(-1,-1,1)`. Previously this was `-x` (full inversion), which meant
-	# the sym-loss target was a different parity than the D-peptide data/decoder
-	# actually used, so the D branch learned a mismatched mapping.
-	flip = torch.tensor([-1.0, -1.0, 1.0], device=x.device, dtype=x.dtype)
-	return x * flip
-
-
-def parity_rotations(R: torch.Tensor) -> torch.Tensor:
-	M = PARITY_SO3.to(device=R.device, dtype=R.dtype)
-	return torch.matmul(R, M)
-
-
-def parity_rotvec(omega: torch.Tensor) -> torch.Tensor:
-	M = PARITY_SO3.to(device=omega.device, dtype=omega.dtype)
-	return torch.matmul(omega, M)
-
-
-def parity_torsions(theta: torch.Tensor) -> torch.Tensor:
-	return -theta
-
-
-def apply_parity_state(trans: torch.Tensor, rot: torch.Tensor, ang: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-	return parity_positions(trans), parity_rotations(rot), parity_torsions(ang)
+    return torch.sqrt(torch.clamp(torch.sum(x * x, dim=dim, keepdim=keepdim), min=eps))
 
 
 def target_velocity(trans_0: torch.Tensor, trans_1: torch.Tensor, rot_0: torch.Tensor, rot_1: torch.Tensor, ang_0: torch.Tensor, ang_1: torch.Tensor, sigma_min: float = 1e-4):

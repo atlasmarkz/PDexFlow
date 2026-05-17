@@ -92,7 +92,7 @@ python -W ignore -m src.experiments.train_lora_real_d \
 
 ### 2. Generate Mirrored D-Peptide Dataset (Optional)
 
-Generate X-axis mirrored (x, y, z) → (-x, y, z) D-peptide dataset for comparative training:
+Generate parity-mirrored (x, y, z) → (-x, -y, z) D-peptide dataset for comparative training:
 
 ```bash
 python scripts/generate_mirrored_dataset.py \
@@ -193,7 +193,7 @@ mypy src/
 - **Metrics** (`metrics/`) — Experiment result CSVs, gitignored. Add your own results for local reference.
 - **Checkpoints** — Saved to `outputs/` or `outputs_lora/`, gitignored.
 - **Cache** (`.cache/`) — LMDB databases auto-generated from PDB structures, gitignored.
-- **Mirrored Dataset** (`data/pepmerge_mirrored/`) — X-axis mirrored D-peptide data, gitignored.
+- **Mirrored Dataset** (`data/pepmerge_mirrored/`) — parity-mirrored D-peptide data, gitignored.
 
 ## Training Strategy Explanation
 

@@ -76,7 +76,7 @@ def preprocess_real_d_structure(task, x_mirror=False):
         return None
 
 class RealDPepDataset(PepDataset):
-    def __init__(self, structure_dir, cache_dir, name='real_d_pep', reset=False, peptide_subdir=None, skip_receptor=True):
+    def __init__(self, structure_dir, cache_dir, name='real_d_pep', reset=False, peptide_subdir=None, skip_receptor=True, chirality_mode: str = "real_d"):
         """Dataset for real (or mirrored) D-peptides.
 
         Args:
@@ -86,11 +86,17 @@ class RealDPepDataset(PepDataset):
             reset: whether to rebuild cache.
             peptide_subdir: optional subfolder name to include (e.g., "peptide").
             skip_receptor: if True, ignore files whose path contains "receptor".
+            chirality_mode:
+                - "real_d": use coordinates as-is (for true D data).
+                - "mirrored_l_to_d": apply parity mirror while parsing.
         """
         self.peptide_subdir = peptide_subdir
         self.skip_receptor = skip_receptor
-        # Mirror along x to convert L coordinates to D chirality for real D-peptide data.
-        super().__init__(structure_dir=structure_dir, dataset_dir=cache_dir, name=name, x_mirror=False, reset=reset)
+        self.chirality_mode = str(chirality_mode)
+        if self.chirality_mode not in ("real_d", "mirrored_l_to_d"):
+            raise ValueError(f"Unsupported chirality_mode: {self.chirality_mode}")
+        use_mirror = self.chirality_mode == "mirrored_l_to_d"
+        super().__init__(structure_dir=structure_dir, dataset_dir=cache_dir, name=name, x_mirror=use_mirror, reset=reset)
 
     def _load_structures(self, reset):
         if reset:

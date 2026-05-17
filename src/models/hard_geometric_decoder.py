@@ -4,6 +4,7 @@ from typing import Dict, Optional
 import torch
 import torch.nn.functional as F
 
+from src.data.parity import PARITY_SO3
 from src.data.pep_constants import BBHeavyAtom
 from src.data.torsion import full_atom_reconstruction, get_heavyatom_mask
 
@@ -16,7 +17,7 @@ class HardGeometricDecoder:
         # Network frame R_pred = R_L @ diag(-1, -1, 1).
         # We want R_dec = R_L (Standard L-frame for reconstruction).
         # So M must be diag(-1, -1, 1).
-        self._mirror = torch.diag(torch.tensor([-1.0, -1.0, 1.0]))
+        self._mirror = PARITY_SO3.clone()
 
     @torch.no_grad()
     def __call__(self, aa: torch.Tensor, trans: torch.Tensor, rotmats: torch.Tensor, angles: torch.Tensor, chirality: torch.Tensor, peptide_mask: torch.Tensor):

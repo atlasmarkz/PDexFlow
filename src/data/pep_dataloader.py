@@ -243,7 +243,8 @@ class DualPepDataset(Dataset):
       - chirality=0: L-peptide from ``structure_dir_L``
       - chirality=1: D-peptide from ``structure_dir_D``
 
-    The two caches must have identical ``db_ids`` ordering (same PDB entries).
+    The two caches must have identical entries. Each index yields either L or D
+    branch from the same pair id so the chirality token is always consistent.
     """
 
     MAP_SIZE = 32 * (1024 * 1024 * 1024)
@@ -252,22 +253,33 @@ class DualPepDataset(Dataset):
         super().__init__()
         self.ds_L = PepDataset(structure_dir=structure_dir_L, dataset_dir=cache_dir_L, name=name_L, reset=reset)
         self.ds_D = PepDataset(structure_dir=structure_dir_D, dataset_dir=cache_dir_D, name=name_D, reset=reset)
+        if len(self.ds_L) != len(self.ds_D):
+            raise ValueError(f"L/D cache length mismatch: {len(self.ds_L)} vs {len(self.ds_D)}")
 
     def __len__(self):
-        return len(self.ds_L)
+        # Expose both branches each epoch: even -> L, odd -> D.
+        return len(self.ds_L) * 2
 
     def __getitem__(self, index):
-        sample_L = dict(self.ds_L[index])
-        sample_D = dict(self.ds_D[index])
+        pair_idx = index // 2
+        use_d = bool(index % 2)
+        sample_L = dict(self.ds_L[pair_idx])
+        sample_D = dict(self.ds_D[pair_idx])
 
-        assert sample_L.keys() == sample_D.keys(), \
-            f"Key mismatch at index {index} ({sample_L.get('id', '?')}): L has {sample_L.keys()} but D has {sample_D.keys()}"
+        if sample_L.get('id') != sample_D.get('id'):
+            raise ValueError(
+                f"L/D id mismatch at pair {pair_idx}: {sample_L.get('id')} vs {sample_D.get('id')}"
+            )
+        if sample_L.keys() != sample_D.keys():
+            raise ValueError(
+                f"Key mismatch at pair {pair_idx} ({sample_L.get('id', '?')}): "
+                f"L has {sample_L.keys()} but D has {sample_D.keys()}"
+            )
 
         sample_L['chirality'] = torch.tensor(0, dtype=torch.long)
         sample_D['chirality'] = torch.tensor(1, dtype=torch.long)
 
-        sample = {**sample_L, **sample_D}
-        return sample
+        return sample_D if use_d else sample_L
 
 
 class TwinUniversePepDataset(Dataset):

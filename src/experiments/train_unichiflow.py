@@ -85,9 +85,9 @@ def main(cfg: DictConfig):
         torch.backends.cudnn.benchmark = True
 
     run_name = time.strftime("%Y_%m_%d__%H_%M_%S", time.localtime())
-    out_dir = os.path.join(str(cfg.train.logdir), "checkpoints", run_name)
+    out_dir = os.path.join(str(cfg.train.logdir), run_name)
     writer = SummaryWriter(log_dir=out_dir)
-    model_dir = os.path.join(out_dir, "model")
+    model_dir = os.path.join("outputs", "checkpoints", run_name, "model")
     os.makedirs(model_dir, exist_ok=True)
 
     ds = build_dataset(cfg, kind="pepmerge")
@@ -141,10 +141,24 @@ def main(cfg: DictConfig):
             g['lr'] = new_lr
         return optim.param_groups[0]['lr']
 
-    current_sym_weight = float(cfg.flow.get("sym_weight", 1.0))
+    target_sym_weight = float(cfg.flow.get("sym_weight", 1.0))
+    sym_warmup_enable = bool(cfg.flow.get("sym_warmup_enable", False))
+    sym_warmup_start = float(cfg.flow.get("sym_warmup_start_weight", target_sym_weight))
+    sym_warmup_steps = max(1, int(cfg.flow.get("sym_warmup_steps", 1)))
+
+    def _scheduled_sym_weight(step_i: int) -> float:
+        if not sym_warmup_enable:
+            return target_sym_weight
+        alpha = min(1.0, max(0.0, float(step_i) / float(sym_warmup_steps)))
+        return sym_warmup_start + (target_sym_weight - sym_warmup_start) * alpha
 
     for step in pbar:
         batch = du.recursive_to(next(it), device)
+        chir = batch.get('chirality', None)
+        if isinstance(chir, torch.Tensor):
+            writer.add_scalar('train/ld_ratio', chir.float().mean().item(), step)
+        current_sym_weight = _scheduled_sym_weight(step)
+        writer.add_scalar('train/w_sym_override', current_sym_weight, step)
 
         # Debug: print batch data ranges every 5 steps
         if step % 5 == 0:

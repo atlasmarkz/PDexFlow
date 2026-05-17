@@ -5,21 +5,13 @@ import torch
 from torch.utils.data import Dataset
 from torch.utils.data._utils.collate import default_collate
 
+from src.data.parity import parity_positions, parity_rotations, parity_torsions
 from src.data.parsers import parse_pdb
 from src.data.pep_constants import BBHeavyAtom, PAD_RESIDUE_INDEX, resindex_to_ressymb
 
 
-# Parity reflection defined in the prompt: P(R, t) = (R · I_flip, -t) with I_flip = diag(1, 1, -1).
-# To keep rotations on SO(3) for stable log/exp maps, we use the equivalent SO(3) factor
-#   R_parity = R · I_SO3, where I_SO3 = diag(-1, -1, 1).
-# This ensures that, when combined with the HardGeometricDecoder's local-frame flip diag(1,1,-1),
-# atom positions satisfy x' = -(R @ x + t) while keeping det(R_parity)=+1.
-I_FLIP = torch.diag(torch.tensor([1.0, 1.0, -1.0]))
-I_SO3 = torch.diag(torch.tensor([-1.0, -1.0, 1.0]))
-
-
 def apply_parity_transformation(sample: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-    """Apply the P(R,t)=(R·I_flip,-t) transform and mirror coordinates when present.
+    """Apply project parity transform to all known geometric fields.
 
     The function is batch/shape agnostic and only mutates fields that exist. Expected keys:
       - "rotation" or "rot": (...,3,3)
@@ -31,27 +23,23 @@ def apply_parity_transformation(sample: Dict[str, torch.Tensor]) -> Dict[str, to
     mirrored = dict(sample)
 
     if 'rotation' in mirrored:
-        R = mirrored['rotation']
-        M = I_SO3.to(device=R.device, dtype=R.dtype)
-        mirrored['rotation'] = torch.matmul(R, M)
+        mirrored['rotation'] = parity_rotations(mirrored['rotation'])
     if 'rot' in mirrored and 'rotation' not in mirrored:
-        R = mirrored['rot']
-        M = I_SO3.to(device=R.device, dtype=R.dtype)
-        mirrored['rot'] = torch.matmul(R, M)
+        mirrored['rot'] = parity_rotations(mirrored['rot'])
 
     if 'translation' in mirrored:
-        mirrored['translation'] = -mirrored['translation']
+        mirrored['translation'] = parity_positions(mirrored['translation'])
     if 'trans' in mirrored and 'translation' not in mirrored:
-        mirrored['trans'] = -mirrored['trans']
+        mirrored['trans'] = parity_positions(mirrored['trans'])
 
     if 'coords' in mirrored:
-        mirrored['coords'] = -mirrored['coords']
+        mirrored['coords'] = parity_positions(mirrored['coords'])
 
     if 'pos_heavyatom' in mirrored:
-        mirrored['pos_heavyatom'] = -mirrored['pos_heavyatom']
-    
+        mirrored['pos_heavyatom'] = parity_positions(mirrored['pos_heavyatom'])
+
     if 'torsion_angle' in mirrored:
-        mirrored['torsion_angle'] = -mirrored['torsion_angle']
+        mirrored['torsion_angle'] = parity_torsions(mirrored['torsion_angle'])
 
     return mirrored
 
@@ -61,7 +49,7 @@ class TwinUniverseDataset(Dataset):
 
     Each sample returns backbone coordinates, residue tokens, chirality token and mask.
       - 50%: L-mode (native)
-      - 50%: D-mode (mirrored on x-axis, token offset by +20)
+      - 50%: D-mode (project parity mirror, token offset by +20)
     """
 
     def __init__(

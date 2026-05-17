@@ -6,6 +6,7 @@ from Bio.PDB import PDBParser, Selection
 from easydict import EasyDict
 
 from src.data.pep_constants import AA, max_num_heavyatoms, restype_to_heavyatom_names, BBHeavyAtom
+from src.data.parity import parity_positions
 
 
 def _get_residue_heavyatom_info(res) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -63,7 +64,8 @@ def parse_pdb(path: str, model_id: int = 0, unknown_threshold: float = 1.0, x_mi
 
             pos_heavyatom, mask_heavyatom = _get_residue_heavyatom_info(res)
             if x_mirror:
-                pos_heavyatom[..., 0] *= -1
+                # Backward-compatible flag name; uses the project parity convention.
+                pos_heavyatom = parity_positions(pos_heavyatom)
             data.pos_heavyatom.append(pos_heavyatom)
             data.mask_heavyatom.append(mask_heavyatom)
 

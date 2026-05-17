@@ -7,6 +7,7 @@ import torch
 from tqdm.auto import tqdm
 from typing import Dict
 
+from src.data.parity import parity_positions
 from src.data.parsers import parse_pdb, pepmerge_paths
 from src.data.pep_constants import BBHeavyAtom
 from src.data.torsion import get_torsion_angle
@@ -142,7 +143,7 @@ class PepMergeSubsetDataset(PepDataset):
 
         if self.mirror_prob > 0 and torch.rand(()) < self.mirror_prob:
             data = dict(data)
-            data['pos_heavyatom'] = data['pos_heavyatom'] * torch.tensor([-1, -1, 1], dtype=data['pos_heavyatom'].dtype)
+            data['pos_heavyatom'] = parity_positions(data['pos_heavyatom'])
             chirality = 1
         else:
             chirality = 0

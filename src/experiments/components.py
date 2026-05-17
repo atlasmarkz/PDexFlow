@@ -60,6 +60,7 @@ def build_dataset(cfg: DictConfig, kind: DatasetKind) -> Dataset:
             cache_dir=str(cfg.data.cache_dir),
             name=f"real_d_{cfg.data.split}",
             reset=bool(cfg.data.reset_cache),
+            chirality_mode=str(cfg.data.get("chirality_mode", "real_d")),
         )
     raise ValueError(f"Unknown dataset kind: {kind!r}")
 
