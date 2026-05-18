@@ -20,4 +20,3 @@ numpy
 # Optional (not used in current scaffold):
 esm
 scipy
-pandas

@@ -6,9 +6,6 @@ from typing import Any, Dict
 import numpy as np
 import torch
 
-NM_TO_ANG_SCALE = 10.0
-ANG_TO_NM_SCALE = 1.0 / NM_TO_ANG_SCALE
-
 MASK_TOKEN_INDEX = 20
 NUM_AA_TOKENS = 20
 
@@ -47,8 +44,3 @@ def get_time_embedding(timesteps: torch.Tensor, embedding_dim: int, max_position
 
 def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
-
-
-def pairwise_mask_from_res_mask(res_mask: torch.Tensor) -> torch.Tensor:
-    # (B,L) -> (B,L,L)
-    return (res_mask[:, :, None] * res_mask[:, None, :]).bool()

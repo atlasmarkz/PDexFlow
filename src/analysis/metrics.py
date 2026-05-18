@@ -25,23 +25,6 @@ def chirality_error(N: torch.Tensor, CA: torch.Tensor, C: torch.Tensor, CB: torc
     return violations.mean()
 
 
-def clash_score(pos: torch.Tensor, mask: Optional[torch.Tensor] = None, threshold: float = 1.5, bond_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-    """Count atom pairs closer than threshold (excludes self and optional bonds)."""
-    if mask is None:
-        mask = torch.ones(pos.shape[:-1], device=pos.device, dtype=torch.bool)
-    mask = mask.float()
-    diff = pos[:, :, None, :] - pos[:, None, :, :]
-    dist = torch.linalg.norm(diff + 1e-9, dim=-1)
-    pair_mask = (mask[:, :, None] * mask[:, None, :]).bool()
-    eye = torch.eye(pair_mask.size(-1), device=pos.device, dtype=torch.bool)
-    pair_mask = pair_mask & (~eye)
-    if bond_mask is not None:
-        pair_mask = pair_mask & (~bond_mask.bool())
-    violations = (dist < threshold) & pair_mask
-    counts = violations.sum(dim=[1, 2]).float() / 2.0  # symmetric pairs
-    return counts.mean()
-
-
 def kabsch_rmsd(X: torch.Tensor, Y: torch.Tensor, mask: Optional[torch.Tensor] = None, eps: float = 1e-8) -> torch.Tensor:
     """RMSD with Kabsch alignment (batchable)."""
     if mask is None:

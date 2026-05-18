@@ -2,9 +2,6 @@ import torch
 import enum
 
 ## others
-NM_TO_ANG_SCALE = 10.0
-ANG_TO_NM_SCALE = 1 / NM_TO_ANG_SCALE
-
 PAD_RESIDUE_INDEX = MASK_INDEX = 20  # 0-19 for residues, the 20-th for padding (follow MultiFlow)
 
 ##

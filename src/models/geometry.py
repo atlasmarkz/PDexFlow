@@ -1,10 +1,6 @@
 import torch
 
 
-def safe_norm(x: torch.Tensor, dim: int = -1, keepdim: bool = False, eps: float = 1e-8) -> torch.Tensor:
-    return torch.sqrt(torch.clamp(torch.sum(x * x, dim=dim, keepdim=keepdim), min=eps))
-
-
 def normalize_vector(v: torch.Tensor, dim: int = -1, eps: float = 1e-8) -> torch.Tensor:
     return v / (safe_norm(v, dim=dim, keepdim=True, eps=eps))
 
@@ -42,11 +38,3 @@ def compose_chain(Ts):
         R2, t2 = Ts[-1]
         Ts = Ts[:-2] + [compose_rotation_and_translation(R1, t1, R2, t2)]
     return Ts[0]
-
-
-def local_to_global(R: torch.Tensor, t: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
-    assert p.size(-1) == 3
-    p_shape = p.shape
-    p_ = p.view(*p_shape[:-1], 3).unsqueeze(-1)
-    q = torch.matmul(R, p_).squeeze(-1) + t
-    return q.view(p_shape)

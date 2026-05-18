@@ -104,10 +104,14 @@ def build_model(cfg: DictConfig, *, include_multitask_weights: bool) -> UniChiFl
         seq_weight=float(cfg.flow.get("seq_weight", 1.0)),
         angle_dim=int(cfg.model.get("angle_dim", 5)),
         use_ot=bool(cfg.flow.get("use_ot", True)),
+        coord_scale=float(cfg.model.get("coord_scale", 0.1)),
     )
     if include_multitask_weights:
         kwargs["cfm_weight"] = float(cfg.flow.get("cfm_weight", 1.0))
         kwargs["sym_weight"] = float(cfg.flow.get("sym_weight", 1.0))
+    # Pass AFI config if present
+    if cfg.get("afi") is not None:
+        kwargs["afi"] = dict(cfg.get("afi", {}))
     return UniChiFlowModel(**kwargs)
 
 

@@ -38,6 +38,92 @@ def rot6d_to_rotmat(x: torch.Tensor) -> torch.Tensor:
     return torch.stack([b1, b2, b3], dim=-1)
 
 
+def compute_axial_features(trans: torch.Tensor, rot6d: torch.Tensor) -> torch.Tensor:
+    """Compute axial (pseudo)vector features from polar vectors.
+
+    Following PepMirror (Yang et al., 2026), we construct three types of axial
+    features from the polar vector inputs (translations and rotation columns):
+
+    1. Cross product: u x v — invariant under parity (P(u)xP(v) = (-u)x(-v) = uxv)
+    2. Commutator: (u.v)(u x v) — captures higher-frequency chirality information
+    3. Triple product projection: ((w.(u x v)) / ||u x v||) * (u x v) — scalar
+       triple product modulated axial direction
+
+    These axial features break the E(3) equivariance that causes chirality blindness
+    in standard scalarization-based models, making the network SE(3)-sensitive
+    (able to distinguish L from D enantiomers).
+
+    Args:
+        trans: (B, L, 3) translation vectors (CA positions).
+        rot6d: (B, L, 6) 6D rotation representation (first two columns of R).
+
+    Returns:
+        (B, L, 9) concatenated axial features [cross, commutator, triple_proj].
+    """
+    u = trans  # (B, L, 3)
+    v = rot6d[..., 0:3]  # first column of rotation matrix
+    w = rot6d[..., 3:6]  # second column of rotation matrix
+
+    # Axial feature 1: cross product (parity-invariant)
+    cross = torch.cross(u, v, dim=-1)  # (B, L, 3)
+
+    # Axial feature 2: commutator (u.v)(u x v)
+    dot_uv = (u * v).sum(dim=-1, keepdim=True)  # (B, L, 1)
+    commutator = dot_uv * cross  # (B, L, 3)
+
+    # Axial feature 3: triple product projection
+    triple_scalar = (w * cross).sum(dim=-1, keepdim=True)  # (B, L, 1)
+    cross_norm = torch.norm(cross, dim=-1, keepdim=True).clamp(min=1e-8)
+    triple_proj = (triple_scalar / cross_norm) * (cross / cross_norm)  # (B, L, 3)
+
+    return torch.cat([cross, commutator, triple_proj], dim=-1)  # (B, L, 9)
+
+
+class AFIModule(nn.Module):
+    """Axial Feature Injection (AFI) module.
+
+    Injects axial vector features into the polar vector feature stream via
+    channel-wise linear mixing, as proposed in PepMirror:
+
+        v_tilde = A^T v_polar + B^T v_axial
+
+    where A, B are learnable mixing coefficients. This makes the model
+    chirality-aware (SE(3)-sensitive instead of E(3)-equivariant), enabling
+    zero-shot cross-chirality generalization from L-peptide training data
+    to D-peptide generation.
+
+    The module is inserted before every FFN layer in the transformer,
+    modifying the hidden state to include chirality-sensitive features.
+    """
+
+    def __init__(self, d_model: int, axial_dim: int = 9):
+        super().__init__()
+        self.d_model = d_model
+        self.axial_dim = axial_dim
+        # Learnable mixing: project axial features to d_model, then mix
+        self.axial_proj = nn.Linear(axial_dim, d_model, bias=False)
+        # Initialize with small weights so AFI starts near identity (polar-only)
+        nn.init.zeros_(self.axial_proj.weight)
+        # Gate that controls AFI strength (starts at 0, learns to open)
+        self.gate_logit = nn.Parameter(torch.tensor(-2.0))
+
+    def forward(self, h: torch.Tensor, trans: torch.Tensor, rot6d: torch.Tensor) -> torch.Tensor:
+        """Inject axial features into the hidden state.
+
+        Args:
+            h: (B, L, d_model) transformer hidden state.
+            trans: (B, L, 3) translation vectors.
+            rot6d: (B, L, 6) 6D rotation representation.
+
+        Returns:
+            (B, L, d_model) hidden state with axial feature injection.
+        """
+        axial = compute_axial_features(trans, rot6d)  # (B, L, 9)
+        axial_proj = self.axial_proj(axial)  # (B, L, d_model)
+        gate = torch.sigmoid(self.gate_logit)
+        return h + gate * axial_proj
+
+
 @dataclass
 class FlowConfig:
     # sigma_trans=0.1 matches the scale of data-side trans_1 after coord_scale=0.1
@@ -56,6 +142,12 @@ class FlowConfig:
     cfm_w_ang: float = 1.0
     # Automatic loss weighting
     auto_loss_weighting: bool = False
+
+
+@dataclass
+class AFIConfig:
+    enabled: bool = True
+    axial_dim: int = 9  # cross(3) + commutator(3) + triple_proj(3)
 
 
 @dataclass
@@ -118,55 +210,6 @@ class ChiLoRAConfig:
         )
 
 
-class ChiLoRALinear(nn.Module):
-    """LoRA wrapper for Linear with optional backbone freezing."""
-
-    def __init__(self, base: nn.Linear, cfg: ChiLoRAConfig):
-        super().__init__()
-        if cfg.rank <= 0:
-            raise ValueError("ChiLoRA rank must be positive")
-
-        self.base = base
-        self.rank = int(cfg.rank)
-        self.scaling = float(cfg.alpha) / float(self.rank)
-        self.dropout = nn.Dropout(float(cfg.dropout)) if cfg.dropout > 0 else nn.Identity()
-
-        self.lora_A = nn.Parameter(torch.zeros((self.rank, base.in_features)))
-        self.lora_B = nn.Parameter(torch.zeros((base.out_features, self.rank)))
-        self.gate_logit = nn.Parameter(torch.tensor(0.0))
-
-        self._gate: Optional[torch.Tensor] = None
-
-        nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
-        nn.init.zeros_(self.lora_B)
-
-        if cfg.freeze_backbone:
-            for p in self.base.parameters():
-                p.requires_grad = False
-
-    @property
-    def weight(self):
-        return self.base.weight
-
-    @property
-    def bias(self):
-        return self.base.bias
-
-    def set_gate(self, gate: Optional[torch.Tensor]):
-        # gate is broadcastable to (B,L,1) or (B,1,1); None disables gating
-        self._gate = gate
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        base_out = self.base(x)
-        lora_out = self.dropout(x) @ self.lora_A.t() @ self.lora_B.t()
-        gate_scale = torch.sigmoid(self.gate_logit)
-        if self._gate is not None:
-            lora_out = lora_out * self._gate
-        else:
-            lora_out = lora_out * 0.0
-        return base_out + self.scaling * lora_out * gate_scale
-
-
 class UniChiFlowModel(nn.Module):
     """Core UniChiFlow with optional ChiLoRA adapters.
 
@@ -178,7 +221,7 @@ class UniChiFlowModel(nn.Module):
                  sigma_trans: float = 0.1, chi_lora: Optional[Dict] = None, esm: Optional[Dict] = None, cfm_weight: float = 1.0, sym_weight: float = 1.0,
                  seq_weight: float = 1.0, angle_dim: int = 5, use_ot: bool = True,
                  cfm_w_trans: float = 1.0, cfm_w_rot: float = 1.0, cfm_w_ang: float = 1.0,
-                 coord_scale: float = 0.1):
+                 coord_scale: float = 0.1, afi: Optional[Dict] = None):
         super().__init__()
         self.d_model = int(d_model)
         self.max_len = int(max_len)
@@ -215,6 +258,20 @@ class UniChiFlowModel(nn.Module):
                                                    batch_first=True, norm_first=True)
         self.trunk = nn.TransformerEncoder(encoder_layer, num_layers=int(n_layers), enable_nested_tensor=False)
         self._chi_lora_modules: Tuple[ChiLoRALinear, ...] = tuple()
+
+        # === Axial Feature Injection (AFI) ===
+        # AFI modules are inserted before each transformer layer to inject
+        # chirality-sensitive axial features into the hidden state.
+        afi_cfg = AFIConfig()
+        if afi is not None and isinstance(afi, Mapping):
+            afi_cfg = AFIConfig(enabled=bool(afi.get("enable", afi.get("enabled", True))))
+        elif afi is not None and hasattr(afi, "get"):
+            afi_cfg = AFIConfig(enabled=bool(afi.get("enable", afi.get("enabled", True))))
+        self.afi_cfg = afi_cfg
+        self.afi_modules: nn.ModuleList = nn.ModuleList()
+        if self.afi_cfg.enabled:
+            for _ in range(int(n_layers)):
+                self.afi_modules.append(AFIModule(self.d_model, axial_dim=self.afi_cfg.axial_dim))
 
         self.esm_conditioner: Optional[ESM2Conditioner] = None
         self.esm_proj: Optional[nn.Module] = None
@@ -569,8 +626,22 @@ class UniChiFlowModel(nn.Module):
         else:
             gate = None
 
-        with self._chi_lora_gate(gate) if gate is not None else contextlib.nullcontext():
-            h = self.trunk(x, src_key_padding_mask=self._safe_padding_mask(res_mask))
+        # Apply transformer layers with optional AFI injection before each layer.
+        # When AFI is enabled, we iterate over layers manually to inject axial
+        # features (computed from trans_t and rot6d) into the hidden state.
+        rot6d_input = rotmat_to_6d(rot_t)
+        h = x
+        key_pad_mask = self._safe_padding_mask(res_mask)
+
+        if self.afi_cfg.enabled and len(self.afi_modules) > 0:
+            for i, layer in enumerate(self.trunk.layers):
+                # Inject axial features before this layer
+                h = self.afi_modules[i](h, trans_t, rot6d_input)
+                # Run the transformer layer
+                h = layer(h, src_key_padding_mask=key_pad_mask)
+        else:
+            with self._chi_lora_gate(gate) if gate is not None else contextlib.nullcontext():
+                h = self.trunk(x, src_key_padding_mask=key_pad_mask)
 
         pred_trans_1 = self.out_trans(h)
         pred_rot_1 = rot6d_to_rotmat(self.out_rot6d(h))

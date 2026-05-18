@@ -20,24 +20,6 @@ def safe_norm(x: torch.Tensor, dim: int = -1, keepdim: bool = False, eps: float 
     return torch.sqrt(torch.clamp(torch.sum(x * x, dim=dim, keepdim=keepdim), min=eps))
 
 
-def target_velocity(trans_0: torch.Tensor, trans_1: torch.Tensor, rot_0: torch.Tensor, rot_1: torch.Tensor, ang_0: torch.Tensor, ang_1: torch.Tensor, sigma_min: float = 1e-4):
-    v_trans = trans_1 - trans_0
-    rel_rot = so3.relative_rotation(rot_0, rot_1)
-    v_rot = so3.log_map(rel_rot)
-    v_ang = torus.tor_logmap(ang_0, ang_1)
-    return v_trans, v_rot, v_ang
-
-
-def predicted_velocity(pred_trans_1: torch.Tensor, pred_rot_1: torch.Tensor, pred_ang_1: torch.Tensor, trans_t: torch.Tensor, rot_t: torch.Tensor, ang_t: torch.Tensor, t: torch.Tensor, sigma_min: float = 1e-4):
-    dt = 1.0 - t
-    dt = torch.clamp(dt, min=sigma_min)[..., None]
-    v_trans = (pred_trans_1 - trans_t) / dt
-    rot_delta = so3.relative_rotation(rot_t, pred_rot_1)
-    v_rot = so3.log_map(rot_delta) / dt
-    v_ang = torus.tor_logmap(ang_t, pred_ang_1) / dt
-    return v_trans, v_rot, v_ang
-
-
 def flow_matching_loss(pred_x1: Tuple[torch.Tensor, ...], target_x1: Tuple[torch.Tensor, ...],
                        trans_t: torch.Tensor, rot_t: torch.Tensor, ang_t: torch.Tensor, t: torch.Tensor,
                        trans_0: torch.Tensor, rot_0: torch.Tensor, ang_0: torch.Tensor,
@@ -167,10 +149,3 @@ def compute_symmetry_loss(predict_fn, batch: Dict[str, torch.Tensor], t: torch.T
     return symmetry_consistency_loss(pred_states, pred_sym_states,
                                      (trans_t, rot_t, ang_t), (trans_p, rot_p, ang_p),
                                      t, mask, sigma_min=sigma_min)
-
-
-def riemannian_distance(trans_a: torch.Tensor, rot_a: torch.Tensor, ang_a: torch.Tensor, trans_b: torch.Tensor, rot_b: torch.Tensor, ang_b: torch.Tensor) -> torch.Tensor:
-	d_trans = safe_norm(trans_a - trans_b, dim=-1)
-	d_rot = so3.geodesic_distance(rot_a, rot_b)
-	d_ang = safe_norm(torus.tor_logmap(ang_a, ang_b), dim=-1)
-	return torch.sqrt(d_trans.square() + d_rot.square() + d_ang.square())

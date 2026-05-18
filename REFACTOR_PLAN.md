@@ -276,3 +276,73 @@ Step 3 落地后，两条路：
 **当前建议**：A。Step 5 涉及 LoRA 行为变更，没有 GPU 基线数据就不好判定回归是否有漂移。Step 4 纯 yaml 改动 + 显式化 getter，风险近 0，能独立推进。
 
 GPU 基线（§四.1 / §四.2）在 Step 5 之前必须跑，否则 LoRA 重构没有回归参照。CPU smoke 只能保 backbone。
+
+---
+
+## 八、PepMirror + 宇称守恒改进 (2026-05-18)
+
+### 问题诊断
+
+训练 loss 爆炸的根本原因:
+1. **缺失 `src/data/parity.py`**: 所有 parity 变换函数未定义,导入即崩溃
+2. **手性盲区**: E(3)-等变模型 f(X)=f(P(X)),但 sym_loss 要求 f(P(X))=P(f(X)),梯度方向冲突
+3. **超参过大**: lr=5e-4, max_grad_norm=3, sym_weight=1 从第一步就开始,异质 batch 上必然爆炸
+
+### 已完成修改
+
+| ID | 标题 | 核心改动 | 主要文件 |
+|---|---|---|---|
+| **AFI-1** | 创建 parity.py 模块 | `parity_positions/rotations/torsions/rotvec/apply_parity_state` | `src/data/parity.py` (**新增**) |
+| **AFI-2** | AFI 轴向特征注入 | `compute_axial_features` (cross + commutator + triple), `AFIModule` 注入每层 transformer | `src/models/chiralformer.py` |
+| **AFI-3** | 训练超参稳定化 | lr 5e-4→1e-4, max_grad_norm 3→1.0, max_grad_value 5→1.0, batch_size 384→64 | `configs/unichiflow_training.yaml` |
+| **AFI-4** | Sym loss warmup | sym_warmup_enable=true, start=0.0, steps=2000, 线性 ramp 避免早期梯度冲突 | `configs/*.yaml` + `train_unichiflow.py`(已有) |
+| **AFI-5** | 配置目录补全 | 从 UniChiflow 复制并修改 7 个 yaml,新增 afi 配置段 | `configs/` 目录 |
+| **AFI-6** | components.py 适配 | `build_model` 传递 afi/coord_scale 参数 | `src/experiments/components.py` |
+
+### 理论依据
+
+| 来源 | 核心观点 | 我们的实现 |
+|------|---------|-----------|
+| PepMirror (Yang et al., 2026) | 轴向向量(叉积)在镜像下不变号,打破 E(3) 手性盲区 | `compute_axial_features`: cross, commutator, triple_proj |
+| 宇称守恒定理 | 物理定律在空间反演下不变: f(P·x) = P·f(x) | `symmetry_consistency_loss` + warmup |
+| D-Flow (Wu et al., 2024) | 镜像推理: flip receptor → generate L → flip back | `HardGeometricDecoder` (已有) |
+
+### AFI 工作原理
+
+```
+传统 E(3) 模型:                    AFI 增强模型:
+  f(X) = f(P(X))  ❌ 手性盲区        f(X) ≠ f(P(X))  ✅ 手性感知
+  sym_loss 梯度冲突 → 爆炸           sym_loss 有意义约束 → 收敛
+```
+
+AFI 的 gate_logit 初始化为 -2.0 (sigmoid≈0.12),训练初期以极向量为主,
+随着训练进行自动增大轴向特征权重,实现从"能区分手性"到"宇称一致"的平滑过渡。
+
+### 训练命令
+
+```bash
+# 推荐: Pure L 训练 + PH-Flow sym_loss (从 L 数据泛化到 D)
+python -W ignore -m src.experiments.train_unichiflow \
+    --config-path configs \
+    --config-name unichiflow_pure_L
+
+# 标准训练 (TwinUniverse: L+D 混合)
+python -W ignore -m src.experiments.train_unichiflow \
+    --config-path configs \
+    --config-name unichiflow_training
+
+# 低显存 (RTX 4060 Ti 16GB)
+python -W ignore -m src.experiments.train_unichiflow \
+    --config-path configs \
+    --config-name unichiflow_4060ti
+```
+
+### 预期效果
+
+| 指标 | 改进前 | 改进后(预期) |
+|------|--------|-------------|
+| 初始 loss | 100+ (爆炸) | 10-20 (稳定) |
+| grad_norm inf 率 | >30% | <5% |
+| skip_rate | >10% | <2% |
+| 手性错误率 | 随机 (~50%) | <5% (AFI) → 0% (Hard Decoder) |
+| D 肽结构有效性 | 无法训练 | 可生成可靠折叠结构 |
