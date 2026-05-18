@@ -1,4 +1,4 @@
-# UniChiflow (PDexFlow)
+# UniChiflow
 
 **UniChiflow: Parity-Equivariant Flow Matching for D-Peptide Design**
 
@@ -7,7 +7,8 @@ UniChiflow is a state-of-the-art flow matching model designed for generating **D
 ## Key Features
 
 *   **Parity-Harmonized Flow Matching (PH-Flow)**: Learns a vector field equivariant to coordinate reflections, enabling robust learning from limited D-peptide data by leveraging the vast L-peptide dataspace.
-*   **Chiral-Bridge LoRA (ChiLoRA)**: A parameter-efficient, chirality-gated adapter that specializes the backbone Model for specific chiral behaviors without catastrophic forgetting.
+*   **Axial Feature Injection (AFI)**: Breaks E(3) chirality blindness by injecting parity-invariant axial features (cross products, commutators), stabilized with sym warmup.
+*   **Chiral-Bridge LoRA (ChiLoRA)**: A parameter-efficient, chirality-gated adapter that specializes the backbone model for specific chiral behaviors without catastrophic forgetting.
 *   **Hard Geometric Decoder (Reconstruct-then-Reflect)**: A novel decoding strategy that guarantees **0.00% Chiral Error**. It reconstructs residues using standard L-geometry and applies a global coordinate reflection for D-residues, ensuring perfect sidechain-backbone consistency.
 *   **Minibatch Optimal Transport (OT)**: Aligns training noise with data to create straight flow trajectories, accelerating convergence and inference.
 
@@ -32,12 +33,12 @@ pip install -e .
 ```
 unidexflow/
 ├── src/                  # Core package
-│   ├── data/             # Data loading, geometry, torsion conversion
-│   ├── models/           # Model architecture (ChiralFormer, ChiLoRA)
-│   ├── analysis/        # Analysis utilities and metrics
+│   ├── data/             # Data loading, geometry, torsion, parity
+│   ├── models/           # Model architecture (ChiralFormer, ChiLoRA, AFI)
+│   ├── analysis/         # Analysis utilities and metrics
+│   ├── experiments/       # Training scripts and components
 │   └── flow.py           # Core flow matching logic (PH-Flow)
 ├── configs/              # Hydra configuration templates
-├── experiments/          # Training scripts
 ├── scripts/              # Inference and evaluation scripts
 │   ├── analyze_dataset.py       # Dataset distribution analysis
 │   ├── generate_mirrored_dataset.py  # Generate mirrored D-peptide dataset
@@ -48,17 +49,23 @@ unidexflow/
 
 ## Configuration
 
-Configs are templates with `.example.yaml` suffix. Copy to `config.yaml` and modify paths as needed:
+Configs are in `configs/` directory. Copy template and modify paths as needed:
 
 ```bash
 # Create local config
-cp configs/unichiflow_backbone.example.yaml configs/config.yaml
+cp configs/unichiflow_training.yaml configs/config.yaml
 
 # Edit paths (data directory, checkpoint paths, etc.)
 # configs/config.yaml is gitignored - do not commit your local overrides
 ```
 
-**Default paths in example configs:**
+**Available configs:**
+- `unichiflow_pure_L.yaml` — Pure L-peptide training (recommended, leverages sym loss for D-peptide generation)
+- `unichiflow_training.yaml` — Standard training with TwinUniverseDataset
+- `unichiflow_lora.yaml` — LoRA fine-tuning for D-peptides
+- `unichiflow_inference.yaml` — Inference configuration
+
+**Default paths in configs:**
 - `data/` — Place preprocessed PDB structures here
 - `.cache/` — LMDB cache for preprocessed data (auto-created on first run)
 - `outputs/` — Training logs and checkpoints
@@ -80,14 +87,14 @@ python -W ignore -m src.experiments.train_unichiflow \
 ```bash
 python -W ignore -m src.experiments.train_unichiflow \
     --config-path configs \
-    --config-name unichiflow_backbone
+    --config-name unichiflow_training
 ```
 
 **Fine-tuning with LoRA (for D-peptides):**
 ```bash
 python -W ignore -m src.experiments.train_lora_real_d \
     --config-path configs \
-    --config-name unichiflow_training
+    --config-name unichiflow_lora
 ```
 
 ### 2. Generate Mirrored D-Peptide Dataset (Optional)
@@ -169,6 +176,8 @@ Outputs are saved to `outputs/analysis/` with:
 You can toggle core components via Hydra CLI flags:
 
 - **Disable Symmetry Loss**: `flow.sym_weight=0.0`
+- **Disable Sym Warmup**: `flow.sym_warmup_enable=false`
+- **Disable AFI**: `afi.enable=false`
 - **Disable Chiral-Bridge**: `chi_lora.enable=false esm.enable=false`
 - **Disable OT**: `flow.use_ot=false`
 - **Disable Hard Decoder (Ablation testing)**: `sample.use_hard_decoder=false` (Note: This will result in high Chiral Error).
@@ -188,10 +197,24 @@ ruff format .
 mypy src/
 ```
 
+## Training Health Monitoring
+
+Monitor these metrics during training to diagnose issues:
+
+| Metric | Healthy | Warning | Critical |
+|--------|---------|---------|----------|
+| `train/skip_rate` | <2% | 2-10% | >10% |
+| `train/bad_step_streak` | <3 | 3-5 | ≥5 |
+| `train/aa_accuracy` | >30% | 15-30% | <15% |
+
+- **skip_rate**: Percentage of steps skipped due to non-finite loss/gradients
+- **bad_step_streak**: Consecutive skipped steps (indicates systematic issues)
+- **aa_accuracy**: Amino acid sequence recovery (AAR)
+
 ## Data & Artifacts
 
 - **Metrics** (`metrics/`) — Experiment result CSVs, gitignored. Add your own results for local reference.
-- **Checkpoints** — Saved to `outputs/` or `outputs_lora/`, gitignored.
+- **Checkpoints** — Saved to `outputs/<timestamp>/checkpoints/`, gitignored.
 - **Cache** (`.cache/`) — LMDB databases auto-generated from PDB structures, gitignored.
 - **Mirrored Dataset** (`data/pepmerge_mirrored/`) — parity-mirrored D-peptide data, gitignored.
 
@@ -206,6 +229,16 @@ sym_loss: P(v(x_t)) = v(P(x_t))
 ```
 
 Where `P` is the parity transformation (position flip, rotation mirror, angle negation). This allows the model to learn both L and D generation from pure L training data.
+
+### Axial Feature Injection (AFI)
+
+AFI breaks E(3) chirality blindness by injecting parity-invariant axial features:
+
+- **Cross products**: capture right-hand rule chirality
+- **Commutator features**: detect handedness violations
+- **Triple product projections**: invariant under parity
+
+AFI gate_logit initializes at -2.0 (sigmoid≈0.12), allowing gradual activation during sym warmup.
 
 ### Hard Geometric Decoder
 
