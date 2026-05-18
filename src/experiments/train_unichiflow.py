@@ -2,6 +2,12 @@ import math
 import os
 import time
 
+# Set ESM cache directory relative to the project root (../../cache/esm)
+# We use abspath(__file__) to ensure it works regardless of the current working directory (e.g. when using Hydra).
+_esm_cache_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'cache', 'esm'))
+os.makedirs(_esm_cache_dir, exist_ok=True)
+os.environ['TORCH_HOME'] = _esm_cache_dir
+
 import hydra
 import torch
 from omegaconf import DictConfig

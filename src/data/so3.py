@@ -146,6 +146,7 @@ def _vee(M: torch.Tensor) -> torch.Tensor:
     return torch.stack([M[..., 2, 1], M[..., 0, 2], M[..., 1, 0]], dim=-1)
 
 
+@_fp32
 def relative_rotation(R_from: torch.Tensor, R_to: torch.Tensor) -> torch.Tensor:
     """Compute relative rotation R_rel such that R_to = R_from @ R_rel."""
     return torch.matmul(R_from.transpose(-1, -2), R_to)
@@ -171,34 +172,43 @@ def exp_map(omega: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
 def log_map(R: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     """Logarithm map on SO(3): rotation matrix -> axis-angle vector.
 
-    Three branches:
+    Uses the numerically stable atan2-based formula for θ:
+        θ = 2 * atan2(||skew||, (trace-1)/2)
+    which has finite gradients everywhere, unlike acos((trace-1)/2).
+
+    Three branches for the axis extraction:
       - θ very small: first-order Taylor (skew/2 already has the right magnitude)
-      - θ in the open interval: standard `skew * θ / sin(θ)` formula
-      - θ near π: skew degenerates (R ≈ R^T so the skew-symmetric part vanishes);
-        recover the axis from the diagonal of (R+I)/2 = n nᵀ and lift sign from
-        the off-diagonals. This matches PFF's 3-branch rotmat_to_rotvec; without
-        it a relative rotation between a random noise frame and a data frame can
-        fall into θ ≈ π where the old code silently returned 0, corrupting
-        delta_rot and cfm_loss.
+      - θ in the open interval: standard axis-angle extraction
+      - θ near π: recover axis from diagonal of (R+I)/2 = n nᵀ
     """
     trace = R[..., 0, 0] + R[..., 1, 1] + R[..., 2, 2]
-    cos_theta = ((trace - 1) * 0.5).clamp(min=-1.0, max=1.0)
-    theta = torch.acos(cos_theta)
-    sin_theta = torch.sin(theta).clamp(min=eps)
     skew = 0.5 * (R - R.transpose(-1, -2))
     omega = _vee(skew)
-    scale = theta / sin_theta
-    omega_std = omega * scale[..., None]
+    skew_norm = torch.linalg.norm(omega, dim=-1)  # ||ω|| = sin(θ)
 
-    # π branch: (R + I)/2 ≈ n nᵀ when θ=π (I is identity). Extract axis components
-    # from the diagonal; recover relative signs from off-diagonals (R + R^T)/2.
+    # atan2-based θ computation: finite gradients everywhere.
+    # θ = 2 * atan2(||skew||, (trace-1)/2)
+    half_trace_minus_1 = (trace - 1.0) * 0.5
+    theta = 2.0 * torch.atan2(skew_norm, half_trace_minus_1.clamp(min=-1.0, max=1.0))
+
+    # Standard branch: axis = ω / ||ω||, result = axis * θ = ω * θ / ||ω||
+    # For small θ, ||ω|| ≈ θ, so θ / ||ω|| ≈ 1.
+    # Use Taylor expansion: θ/sin(θ) ≈ 1 + θ²/6 + 7θ⁴/360
+    theta_sq = theta * theta
+    scale_taylor = 1.0 + theta_sq / 6.0 + 7.0 * theta_sq * theta_sq / 360.0
+    sin_theta_safe = skew_norm.clamp(min=eps)
+    scale_exact = theta / sin_theta_safe
+    # Smooth blend between Taylor and exact.
+    blend = torch.sigmoid((theta - 0.1) * 200.0)[..., None]
+    scale = (1.0 - blend) * scale_taylor[..., None] + blend * scale_exact[..., None]
+    omega_std = omega * scale
+
+    # π branch: (R + I)/2 ≈ n nᵀ when θ=π. Extract axis from diagonal.
     diag = torch.stack([R[..., 0, 0], R[..., 1, 1], R[..., 2, 2]], dim=-1)
     axis_sq = ((diag + 1.0) * 0.5).clamp(min=0.0)
     axis_pi = torch.sqrt(axis_sq + eps)
-    # Pin the largest component to +; the other two inherit sign from R+R^T off-diag.
     main_idx = torch.argmax(axis_sq, dim=-1, keepdim=True)
     sym = 0.5 * (R + R.transpose(-1, -2))
-    # Signs relative to the main axis: n_i * n_j = sym[i,j] when θ=π.
     row01 = sym[..., 0, 1]
     row02 = sym[..., 0, 2]
     row12 = sym[..., 1, 2]
@@ -209,16 +219,16 @@ def log_map(R: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
         main_idx == 0, sign_if_main_is_0,
         torch.where(main_idx == 1, sign_if_main_is_1, sign_if_main_is_2),
     )
-    # sign(0) is 0 which would zero out the axis — replace zeros with +1.
     signs = torch.where(signs == 0, torch.ones_like(signs), signs)
     omega_pi = axis_pi * signs * theta[..., None]
 
-    # Taylor-small branch (cheap; applies when θ < 1e-4).
-    small = (theta < 1e-4).float()[..., None]
-    near_pi = (theta > math.pi - 1e-2).float()[..., None]
-    regular = (1.0 - small) * (1.0 - near_pi)
+    # Smooth blending between branches.
+    small_blend = torch.sigmoid((1e-4 - theta) * 1e5)[..., None]
+    near_pi_blend = torch.sigmoid((theta - (math.pi - 1e-2)) * 1e3)[..., None]
+    regular_blend = (1.0 - small_blend) * (1.0 - near_pi_blend)
+
     omega_small = omega * 0.5 * theta[..., None]
-    return small * omega_small + regular * omega_std + near_pi * omega_pi
+    return small_blend * omega_small + regular_blend * omega_std + near_pi_blend * omega_pi
 
 
 @_fp32

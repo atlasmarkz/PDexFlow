@@ -726,18 +726,24 @@ class UniChiFlowModel(nn.Module):
             sigma_min=sigma_min,
         )
 
-        sym_loss = ph_flow.compute_symmetry_loss(
-            predict_fn=lambda b, t_in, seq_in, trans_in, rot_in, ang_in: self.predict_x1(b, t_in, seq_in, trans_in, rot_in, ang_in),
-            batch=batch,
-            t=t,
-            seq_t=seq_t,
-            trans_t=trans_t,
-            rot_t=rot_t,
-            ang_t=ang_t,
-            mask=mask,
-            pred_out=out,
-            sigma_min=sigma_min,
-        )
+        # Skip symmetry loss computation entirely if weight is zero to avoid
+        # autograd graph pollution from the second predict_x1 call.
+        effective_sym_weight = sym_weight_override if sym_weight_override is not None else self.flow_cfg.sym_weight
+        if effective_sym_weight > 0:
+            sym_loss = ph_flow.compute_symmetry_loss(
+                predict_fn=lambda b, t_in, seq_in, trans_in, rot_in, ang_in: self.predict_x1(b, t_in, seq_in, trans_in, rot_in, ang_in),
+                batch=batch,
+                t=t,
+                seq_t=seq_t,
+                trans_t=trans_t,
+                rot_t=rot_t,
+                ang_t=ang_t,
+                mask=mask,
+                pred_out=out,
+                sigma_min=sigma_min,
+            )
+        else:
+            sym_loss = torch.tensor(0.0, device=cfm_loss.device)
 
         # CE only on peptide residues
         if mask.any():

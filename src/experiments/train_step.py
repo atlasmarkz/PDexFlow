@@ -50,11 +50,20 @@ class StepOutcome:
 
 
 def _all_grads_finite(parameters) -> bool:
-    for p in parameters:
+    problematic_params = []
+    for name, p in parameters:
         if p.grad is None:
             continue
         if not torch.isfinite(p.grad).all():
-            return False
+            nan_cnt = torch.isnan(p.grad).sum().item()
+            inf_cnt = torch.isinf(p.grad).sum().item()
+            problematic_params.append((name, tuple(p.shape), nan_cnt, inf_cnt))
+    if problematic_params:
+        print(f"[DEBUG] Non-finite grad in {len(problematic_params)} param(s):")
+        for name, shape, nan_cnt, inf_cnt in problematic_params:
+            total = shape[0] * shape[1] if len(shape) == 2 else shape[0]
+            print(f"  {name}: shape={shape}, nan={nan_cnt}/{total}, inf={inf_cnt}")
+        return False
     return True
 
 
@@ -127,8 +136,8 @@ def do_train_step(
         scaler.unscale_(optim)
 
     # Pre-clip check: any grad non-finite → skip this accumulation entirely.
-    params = list(model.parameters())
-    if not _all_grads_finite(params):
+    named_params = list(model.named_parameters())
+    if not _all_grads_finite(named_params):
         optim.zero_grad(set_to_none=True)
         if cfg.use_amp:
             scaler.update()
@@ -137,9 +146,10 @@ def do_train_step(
             loss=loss_dict['loss'].item(),
             components=components,
         )
-    _clip_grad_values(params, cfg.max_grad_value)
+    all_params = list(model.parameters())
+    _clip_grad_values(all_params, cfg.max_grad_value)
 
-    grad = clip_grad_norm_(params, cfg.max_grad_norm)
+    grad = clip_grad_norm_(all_params, cfg.max_grad_norm)
     if not torch.isfinite(grad):
         optim.zero_grad(set_to_none=True)
         if cfg.use_amp:

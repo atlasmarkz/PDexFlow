@@ -64,3 +64,4 @@ data/
 # Cache directories
 .cache/
 .mmseqs2_cache/
+cache/
