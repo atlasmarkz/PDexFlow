@@ -1,4 +1,4 @@
-<h1><img src="assets/logo.svg" alt="PDexFlow logo" width="72" align="absmiddle"> PDexFlow</h1>
+<h1><img src="assets/logo.png" alt="PDexFlow logo" width="72" align="absmiddle"> PDexFlow</h1>
 
 **Escaping the Mirror Trap: Parity-Harmonized Flow Matching on Riemannian Manifolds for Peptide Design** — generate L- and D-peptide binders with symmetry-consistent flow matching and hard geometric constraints.
 
