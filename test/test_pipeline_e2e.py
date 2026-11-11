@@ -43,6 +43,8 @@ def test_train_lora_sample_eval_pipeline(tmp_path):
         assert glob.glob(str(tmp_path / f"peptides{token}" / "*" / "*" / "sample_0.pdb")), "no sampled structure written"
 
     out = _run(["-m", "src.cli.evaluate", *infer, "sample.device=cpu", f"sample.ckpt_path={ckpt[0]}",
-                "sample.max_eval=2", "sample.num_steps=3", f"sample.output_dir={tmp_path / 'eval'}", "eval.dataset_x_mirror=true"], cwd=tmp_path)
+                "sample.max_eval=2", "sample.num_steps=3", f"sample.output_dir={tmp_path / 'eval'}", "eval.dataset_x_mirror=true",
+                "eval.reference.enable=true", "eval.reference.max_samples=4"], cwd=tmp_path)  # also exercises the novelty path
     metrics = dict(line.split(": ", 1) for line in out.splitlines() if ": " in line and line.split(": ", 1)[0].replace("_", "").isalnum())
+    assert "novelty_seq_id_max_mean" in metrics and metrics["novelty_seq_id_max_mean"] != "nan", "reference bank was not used"
     assert "aar_mean" in metrics and float(metrics["chiral_error_mean"]) == 0.0, "D-mode evaluation must report 0 chirality error"
