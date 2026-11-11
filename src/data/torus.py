@@ -36,10 +36,6 @@ def tor_logmap(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     return torch.atan2(torch.sin(y - x), torch.cos(y - x))
 
 
-def tor_projx(x: torch.Tensor) -> torch.Tensor:
-    return x % (2 * math.pi)
-
-
 def tor_random_uniform(*size, dtype=None, device=None) -> torch.Tensor:
     z = torch.rand(*size, dtype=dtype, device=device)
     return z * 2 * math.pi

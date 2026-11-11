@@ -21,7 +21,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.data.parsers import parse_pdb
 from src.data.pep_constants import AA, BBHeavyAtom
 
@@ -474,7 +474,7 @@ def analyze_pepmerge_dataset(structure_dir: str, max_samples: int = None, sample
     rec_omegas_arr = np.array(rec_all_omegas)
 
     script_dir = Path(__file__).parent
-    base_output_dir = script_dir.parent / "outputs" / "analysis"
+    base_output_dir = script_dir.parents[1] / "outputs" / "analysis"
     peptide_output_dir = base_output_dir / "peptide"
     receptor_output_dir = base_output_dir / "receptor"
     os.makedirs(peptide_output_dir, exist_ok=True)

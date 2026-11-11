@@ -119,29 +119,6 @@ def solve_ot(cost: torch.Tensor) -> torch.Tensor:
     return perm
 
 
-def minibatch_ot_align(x0: torch.Tensor, x1: torch.Tensor, mask1: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Align noisy samples to data samples with OT permutation.
-
-    Args:
-        x0: (B,N,3) noisy Gaussian samples.
-        x1: (B,N,3) data samples.
-        mask1: optional (B,N) valid mask.
-    Returns:
-        x0_perm: permuted x0 that best matches x1.
-        perm: permutation indices (B,N).
-    """
-    if isinstance(x0, tuple) or isinstance(x1, tuple):
-        z0_perm, perm = minibatch_optimal_transport(x0, x1, mask1)
-        return z0_perm, perm
-
-    C = pairwise_cost(x0, x1, mask1)
-    perm = solve_ot(C)
-    # gather according to perm for each batch
-    B, N, _ = x0.shape
-    batch_idx = torch.arange(B, device=x0.device)[:, None].expand(-1, N)
-    x0_perm = x0[batch_idx, perm]
-    return x0_perm, perm
-
 
 def minibatch_optimal_transport(z0: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
                            z1: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],

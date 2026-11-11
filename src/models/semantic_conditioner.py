@@ -75,7 +75,7 @@ class ESM2Conditioner(nn.Module):
         if mask is None:
             mask = torch.ones((B, L), dtype=torch.bool, device=device)
         # convert to strings
-        from src.data.twin_universe_dataset import tokens_to_strings  # lazy: avoids biopython import at module load
+        from src.data.utils import tokens_to_strings  # lazy: avoids biopython import at module load
         aa_strings = tokens_to_strings(seq.cpu(), mask.cpu())
         for i, s in enumerate(aa_strings):
             strings.append((f"seq_{i}", s))

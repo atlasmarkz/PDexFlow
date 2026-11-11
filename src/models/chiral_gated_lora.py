@@ -62,18 +62,3 @@ class ChiralBridgeLoRA(nn.Module):
         gate_strength = torch.sigmoid(self.gate_logit)
         scale = gate_strength * gate
         return base_out + self.scaling * lora_out * scale
-
-
-def wrap_transformer_with_chiral_lora(transformer: nn.TransformerEncoder, rank: int = 4, alpha: float = 8.0, dropout: float = 0.0, gate_init: float = 0.0):
-    """In-place wrap of a TransformerEncoder's FFN and attention output with ChiralBridgeLoRA.
-
-    Returns a tuple of the inserted LoRA modules so that callers can set gates per forward.
-    """
-    modules = []
-    for layer in transformer.layers:
-        layer.linear1 = ChiralBridgeLoRA(layer.linear1, rank=rank, alpha=alpha, dropout=dropout, gate_init=gate_init)
-        layer.linear2 = ChiralBridgeLoRA(layer.linear2, rank=rank, alpha=alpha, dropout=dropout, gate_init=gate_init)
-        layer.self_attn.out_proj = ChiralBridgeLoRA(layer.self_attn.out_proj, rank=rank, alpha=alpha, dropout=dropout, gate_init=gate_init)
-        modules.extend([layer.linear1, layer.linear2, layer.self_attn.out_proj])
-    transformer._chiral_lora_modules = tuple(modules)
-    return transformer._chiral_lora_modules

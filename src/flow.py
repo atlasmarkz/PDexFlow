@@ -29,10 +29,6 @@ def _velocity_loss(pred: torch.Tensor, target: torch.Tensor, loss_type: str, hub
     raise ValueError(f"loss_type must be 'huber' or 'l2', got {loss_type!r}")
 
 
-def safe_norm(x: torch.Tensor, dim: int = -1, keepdim: bool = False, eps: float = 1e-8) -> torch.Tensor:
-    return torch.sqrt(torch.clamp(torch.sum(x * x, dim=dim, keepdim=keepdim), min=eps))
-
-
 def flow_matching_loss(pred_x1: Tuple[torch.Tensor, ...], target_x1: Tuple[torch.Tensor, ...],
                        trans_t: torch.Tensor, rot_t: torch.Tensor, ang_t: torch.Tensor, t: torch.Tensor,
                        trans_0: torch.Tensor, rot_0: torch.Tensor, ang_0: torch.Tensor,

@@ -2,10 +2,6 @@
 outputs/
 outputs_lora/
 unichiflow_output/
-pep_cache/
-pep_cache_lora/
-pep_cache_lora_d/
-pep_cache_dreal/
 *.lmdb
 *-cache.lmdb*
 
@@ -24,7 +20,8 @@ dist/
 build/
 *.whl
 
-# Python
+# OS / Python
+.DS_Store
 __pycache__/
 *.py[cod]
 *.so

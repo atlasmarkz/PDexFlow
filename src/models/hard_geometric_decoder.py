@@ -1,11 +1,8 @@
 """Hard geometric decoder for L/D templates."""
-from typing import Dict, Optional
-
 import torch
 import torch.nn.functional as F
 
 from src.data.parity import LOCAL_REFLECTION
-from src.data.pep_constants import BBHeavyAtom
 from src.data.torsion import full_atom_reconstruction, get_heavyatom_mask
 
 
@@ -65,41 +62,3 @@ class HardGeometricDecoder:
         pos15 = F.pad(pos14, pad=(0, 0, 0, 15 - 14), value=0.0)
         mask15 = get_heavyatom_mask(aa)
         return pos15, mask15
-
-
-def reconstruct_atom_positions(frames: Dict[str, torch.Tensor], torsions: torch.Tensor, chirality_token: torch.Tensor, peptide_mask: Optional[torch.Tensor] = None):
-    """Reconstruct atom coordinates with hard chirality constraints.
-
-    Args:
-        frames: dict containing `aa`, `trans`/`translation`, and `rotmats`/`rotation`.
-        torsions: (B,L,5) torsion angles.
-        chirality_token: (B,) or (B,1) tensor; 0=L, 1=D.
-        peptide_mask: optional (B,L) bool mask; if None defaults to ones.
-    Returns:
-        pos15: (B,L,15,3) coordinates.
-        mask15: (B,L,15) validity mask.
-    """
-    if not isinstance(frames, dict):
-        raise TypeError("frames must be a mapping with aa/trans/rotmats entries")
-
-    aa = frames.get('aa')
-    if aa is None:
-        aa = frames.get('seq')
-    if aa is None:
-        raise KeyError("frames must include 'aa' or 'seq'")
-
-    trans = frames.get('trans', frames.get('translation'))
-    if trans is None:
-        raise KeyError("frames must include 'trans' or 'translation'")
-
-    rotmats = frames.get('rotmats', frames.get('rotation'))
-    if rotmats is None:
-        raise KeyError("frames must include 'rotmats' or 'rotation'")
-
-    if peptide_mask is None:
-        peptide_mask = frames.get('peptide_mask', frames.get('generate_mask'))
-    if peptide_mask is None:
-        peptide_mask = torch.ones_like(aa, dtype=torch.bool)
-
-    decoder = HardGeometricDecoder()
-    return decoder(aa=aa, trans=trans, rotmats=rotmats, angles=torsions, chirality=chirality_token, peptide_mask=peptide_mask)
