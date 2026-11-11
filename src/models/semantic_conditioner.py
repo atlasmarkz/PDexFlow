@@ -13,10 +13,8 @@ except Exception as exc:  # pragma: no cover
 else:
     _esm_import_error = None
 
-# NOTE: `tokens_to_strings` is imported lazily inside forward() because its module
-# (src.data.twin_universe_dataset → src.data.parsers) transitively requires
-# biopython/easydict, which are only needed for real PDB datasets, not for model
-# construction or CPU smoke tests.
+# NOTE: `tokens_to_strings` lives in src.data.utils and is imported inside forward() so that building the model
+# never pulls in the data pipeline.
 
 
 @dataclass
