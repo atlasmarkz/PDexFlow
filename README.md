@@ -45,7 +45,7 @@ python -W ignore -m src.experiments.train_lora_real_d data.structure_dir=data/re
 ```bash
 python -W ignore scripts/inference_pdexflow.py \
     sample.ckpt_path=/path/to/backbone.pt sample.chirality_token=1 sample.num_samples=100
-# with LoRA: add  chi_lora.enable=true sample.lora_ckpt_path=/path/to/lora.pt
+# with LoRA: add  chi_lora=finetune sample.lora_ckpt_path=/path/to/lora.pt
 ```
 
 **Evaluate** (AAR, CA-RMSD, chirality error, novelty, diversity; Rosetta scores are read from an optional external CSV)

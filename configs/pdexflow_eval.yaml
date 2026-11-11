@@ -1,6 +1,13 @@
 # PDexFlow evaluation: samples peptides for every complex of a split and reports
 # AAR (amino-acid recovery), CA-RMSD, chirality error, novelty, diversity and efficiency statistics.
 # Rosetta / MD based numbers (Aff., Stb.) are not computed here; they can be read from external CSVs (eval.orthogonal / eval.dynamic).
+defaults:
+  - model: default
+  - flow: default
+  - chi_lora: disabled
+  - esm: disabled
+  - _self_
+
 data:
   structure_dir: data/pepmerge
   cache_dir: .cache/pepmerge
@@ -11,37 +18,12 @@ train:
   seed: 0
 
 model:
-  n_rbf: 16
-  d_model: 256
-  n_layers: 6
-  n_heads: 8
-  dropout: 0.0
-  max_len: 512
-  aatype_vocab: 21
-  angle_dim: 5
-  coord_scale: 0.1
-
-flow:
-  sigma_trans: 0.1
-  use_ot: true
-  num_steps: 30
-  angle_purify: true
-
-chi_lora:
-  enable: false
-  rank: 8
-  alpha: 16.0
-  dropout: 0.0
-  targets: [attn, ffn]
-  freeze_backbone: false
-
-esm:
-  enable: false
-
+  dropout: 0.0                     # no dropout at inference time
 
 sample:
   device: cuda
   ckpt_path: null                    # required
+  lora_ckpt_path: null               # optional Chiral-Bridge LoRA checkpoint (needs chi_lora.enable=true)
   output_dir: outputs/eval
   max_eval: 100
   num_steps: 30

@@ -1,0 +1,10 @@
+# Network size (paper Sec. IV-C: 6 layers, d = 256).
+d_model: 256
+n_layers: 6
+n_heads: 8
+dropout: 0.1
+max_len: 512
+aatype_vocab: 21
+angle_dim: 5          # psi, chi1-4 (harmonic features: sin/cos)
+coord_scale: 0.1      # angstrom -> model units
+n_rbf: 16             # radial basis functions for CA-CA distance features

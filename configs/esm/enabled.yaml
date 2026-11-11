@@ -1,0 +1,2 @@
+enable: true
+model: esm2_t6_8M_UR50D   # e.g. esm2_t33_650M_UR50D for the 650M model

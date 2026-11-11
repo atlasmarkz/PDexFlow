@@ -1,0 +1,7 @@
+# Chiral-Bridge LoRA fine-tuning / sampling with LoRA: only LoRA matrices and the gate gamma are trainable.
+enable: true
+rank: 8
+alpha: 16.0
+dropout: 0.0
+targets: [attn, ffn]
+freeze_backbone: true

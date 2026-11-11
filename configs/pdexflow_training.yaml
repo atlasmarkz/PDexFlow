@@ -1,5 +1,12 @@
 # PDexFlow backbone training (mirror-symmetric strategy on PepMerge-style data).
 # Override on the CLI, e.g.  data.structure_dir=/path/to/PepMerge train.max_iters=2000
+defaults:
+  - model: default
+  - flow: default
+  - chi_lora: disabled
+  - esm: disabled
+  - _self_
+
 data:
   structure_dir: data/pepmerge       # one sub-directory per complex with peptide.pdb + pocket.pdb
   cache_dir: .cache/pepmerge         # LMDB caches are built here on first run
@@ -20,39 +27,3 @@ train:
   optimizer:
     lr: 1.0e-4
     weight_decay: 0.0
-
-model:
-  n_rbf: 16
-  d_model: 256
-  n_layers: 6
-  n_heads: 8
-  dropout: 0.1
-  max_len: 512
-  aatype_vocab: 21
-  angle_dim: 5
-  coord_scale: 0.1
-
-flow:
-  sigma_trans: 0.1
-  use_ot: true                       # Mini-ROT (paper Eq. 13)
-  loss_type: huber                   # huber (robust, default) | l2 (squared norm of paper Eq. 4/5)
-  cfm_weight: 1.0
-  sym_weight: 1.0                    # lambda_sym of the symmetry consistency loss
-  seq_weight: 1.0                    # lambda_seq
-  sym_warmup_enable: false
-  sym_warmup_steps: 1
-  sym_warmup_start_weight: 0.0
-  num_steps: 30
-  angle_purify: true
-
-chi_lora:                            # Chiral-Bridge LoRA; usually enabled for fine-tuning on the real D-peptide set
-  enable: false
-  rank: 8
-  alpha: 16.0
-  dropout: 0.0
-  targets: [attn, ffn]
-  freeze_backbone: false
-
-esm:                                 # frozen ESM-2 receptor features (needs `pip install fair-esm`)
-  enable: false
-

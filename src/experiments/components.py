@@ -187,3 +187,34 @@ def resolve_inference_device(cfg_device: str) -> str:
             return "mps"
         return "cpu"
     return "cpu"
+
+
+def load_model_for_inference(cfg: DictConfig, device: str) -> PDexFlowModel:
+    """Build the model from ``cfg`` and load ``sample.ckpt_path`` (plus optional ``sample.lora_ckpt_path``).
+
+    Shared by sampling and evaluation. Weight mismatches raise instead of being silently ignored: a partially
+    loaded model would otherwise produce plausible-looking but meaningless structures.
+    """
+    sam = cfg.sample
+    if not sam.get("ckpt_path"):
+        raise ValueError("sample.ckpt_path must be provided")
+    model = build_model(cfg, include_multitask_weights=False).to(device)
+
+    print(f"Loading backbone from {sam.ckpt_path}")
+    # weights_only=False: checkpoints store the OmegaConf config next to the weights
+    ckpt = torch.load(str(sam.ckpt_path), map_location=device, weights_only=False)
+    lora_enabled = bool(cfg.get("chi_lora", {}).get("enable", False))
+    if lora_enabled:
+        # the LoRA wrappers rename parameters ('linear.weight' -> 'linear.base.weight')
+        model = load_backbone_into_lora(model, ckpt["model"])
+    else:
+        model.load_state_dict(ckpt["model"], strict=True)
+
+    if sam.get("lora_ckpt_path"):
+        if not lora_enabled:
+            raise ValueError("sample.lora_ckpt_path requires chi_lora.enable=true")
+        print(f"Loading LoRA weights from {sam.lora_ckpt_path}")
+        lora_ckpt = torch.load(str(sam.lora_ckpt_path), map_location=device, weights_only=False)
+        model.load_state_dict(lora_ckpt["model"], strict=True)
+
+    return model.eval()

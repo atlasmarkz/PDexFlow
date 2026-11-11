@@ -168,7 +168,7 @@ class PDexFlowModel(nn.Module):
 
         # Paper Sec. IV-C: RBF-biased peptide self-attention + receptor cross-attention.
         self.trunk = GeometricTransformer(self.d_model, int(n_layers), int(n_heads), dropout=float(dropout), n_rbf=int(n_rbf))
-        self._chi_lora_modules: Tuple[ChiLoRALinear, ...] = tuple()
+        self._chi_lora_modules: Tuple[ChiralBridgeLoRA, ...] = tuple()
 
         self.esm_conditioner: Optional[ESM2Conditioner] = None
         self.esm_proj: Optional[nn.Module] = None
@@ -334,7 +334,6 @@ class PDexFlowModel(nn.Module):
                 (trans_0, rot_0, ang_0), (trans_1, rot_1, ang_1), pep_mask
             )
 
-        sigma_min = getattr(self.flow_cfg, 'sigma_min', 1e-4)
         trans_t = (1.0 - t[..., None]) * trans_0 + t[..., None] * trans_1
         # t should be broadcastable to (B,L,1) inside slerp; using two new axes would
         # incorrectly broadcast (B,L,4) -> (1,B,L,4) and create an extra B dimension.

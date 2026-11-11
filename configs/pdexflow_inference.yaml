@@ -1,4 +1,11 @@
 # PDexFlow sampling. chirality_token: 0 = L-peptide, 1 = D-peptide (Hard Geometric Constraint decoder).
+defaults:
+  - model: default
+  - flow: default
+  - chi_lora: disabled
+  - esm: disabled
+  - _self_
+
 data:
   use_pepmerge: true
   structure_dir: data/pepmerge
@@ -10,33 +17,7 @@ train:
   seed: 0
 
 model:
-  n_rbf: 16
-  d_model: 256
-  n_layers: 6
-  n_heads: 8
-  dropout: 0.0
-  max_len: 512
-  aatype_vocab: 21
-  angle_dim: 5
-  coord_scale: 0.1
-
-flow:
-  sigma_trans: 0.1
-  use_ot: true
-  num_steps: 30
-  angle_purify: true
-
-chi_lora:
-  enable: false
-  rank: 8
-  alpha: 16.0
-  dropout: 0.0
-  targets: [attn, ffn]
-  freeze_backbone: false
-
-esm:
-  enable: false
-
+  dropout: 0.0                     # no dropout at inference time
 
 sample:
   device: cuda                       # cuda | mps | cpu (auto fallback)

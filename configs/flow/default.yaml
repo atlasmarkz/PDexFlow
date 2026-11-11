@@ -1,0 +1,12 @@
+# Flow matching and training objective (paper Sec. IV-A, IV-E).
+sigma_trans: 0.1
+use_ot: true             # Mini-ROT (Eq. 13)
+loss_type: huber         # huber (robust, default) | l2 (squared norm of Eq. 4/5)
+cfm_weight: 1.0
+sym_weight: 1.0          # lambda_sym of the symmetry consistency loss (Eq. 5)
+seq_weight: 1.0          # lambda_seq
+sym_warmup_enable: false
+sym_warmup_steps: 1
+sym_warmup_start_weight: 0.0
+num_steps: 30            # sampling steps
+angle_purify: true

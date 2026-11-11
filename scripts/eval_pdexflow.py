@@ -15,13 +15,12 @@ import torch
 from omegaconf import DictConfig
 from tqdm import tqdm
 
-from src.checkpoint import load_backbone_into_lora
 from src.data import utils as du
 from src.data.pep_constants import BBHeavyAtom
 from src.data.pep_dataloader import PaddingCollate, PepDataset
 from src.data.writers import save_pdb
 from src.analysis.metrics import aar_accuracy, chirality_error, kabsch_rmsd
-from src.experiments.components import build_model, resolve_inference_device
+from src.experiments.components import load_model_for_inference, resolve_inference_device
 
 config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "configs"))  # independent of the cwd
 config_name = "pdexflow_eval.yaml"
@@ -370,20 +369,8 @@ def main(cfg: DictConfig):
         ref_bank = _load_reference_bank(ds_ref, max_samples=int(cfg.eval.reference.max_samples))
         ref_features = [_descriptor_from_ca(r["ca"]) for r in ref_bank]
 
-    model = build_model(cfg, include_multitask_weights=False).to(device)  # same construction path as training
-
+    model = load_model_for_inference(cfg, device)
     sam = cfg.sample
-    if not sam.ckpt_path:
-        raise ValueError("sample.ckpt_path must be provided for evaluation")
-    ckpt = torch.load(str(sam.ckpt_path), map_location=device, weights_only=False)
-    if cfg.get("chi_lora", {}).get("enable", False):
-        model = load_backbone_into_lora(model, ckpt["model"])
-    else:
-        try:
-            model.load_state_dict(ckpt["model"], strict=True)
-        except RuntimeError:
-            model.load_state_dict(ckpt["model"], strict=False)
-    model.eval()
 
     max_eval = min(len(ds_eval), int(cfg.sample.max_eval))
     num_steps = int(sam.get("num_steps", cfg.flow.get("num_steps", 30)))

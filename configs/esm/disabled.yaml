@@ -1,0 +1,2 @@
+# Frozen ESM-2 receptor features are disabled. Enable with  esm=enabled  (needs `pip install fair-esm`).
+enable: false

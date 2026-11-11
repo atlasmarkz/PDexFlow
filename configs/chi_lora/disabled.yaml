@@ -1,0 +1,7 @@
+# Chiral-Bridge LoRA disabled (backbone training, L-only sampling).
+enable: false
+rank: 8
+alpha: 16.0
+dropout: 0.0
+targets: [attn, ffn]     # attn = q/k/v/out of self- and cross-attention, ffn = both feed-forward projections
+freeze_backbone: false

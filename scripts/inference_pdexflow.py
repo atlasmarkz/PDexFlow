@@ -33,8 +33,7 @@ from src.data.real_d_pep_dataset import RealDPepDataset
 from src.data.pepmerge_dataset import PepMergeDataset
 from src.data import utils as du
 from src.data.writers import save_pdb
-from src.checkpoint import load_backbone_into_lora
-from src.experiments.components import build_model, resolve_inference_device
+from src.experiments.components import load_model_for_inference, resolve_inference_device
  
 
 
@@ -87,32 +86,7 @@ def main(cfg: DictConfig):
             skip_receptor=bool(cfg.data.get("skip_receptor", True)),
         )
 
-    model = build_model(cfg, include_multitask_weights=False).to(device)  # same construction path as training
-
-    if sam.ckpt_path:
-        print(f"Loading backbone from {sam.ckpt_path}")
-        # weights_only=False allows loading OmegaConf DictConfig stored in the checkpoint
-        ckpt = torch.load(str(sam.ckpt_path), map_location=device, weights_only=False)
-        state_dict = ckpt['model']
-
-        # If LoRA is enabled, we need to adapt the backbone state dict
-        # because the LoRA wrapper changes parameter names (e.g. 'linear.weight' -> 'linear.base.weight')
-        if cfg.get("chi_lora", {}).get("enable", False):
-            print("Adapting backbone weights for LoRA model structure (using intelligent loader)...")
-            model = load_backbone_into_lora(model, state_dict)
-        else:
-            # Use strict=False to allow flexibility
-            msg = model.load_state_dict(state_dict, strict=False)
-            print(f"Load status: {msg}")
-
-    # Support loading separate LoRA weights if provided
-    if sam.get("lora_ckpt_path") and cfg.get("chi_lora", {}).get("enable", False):
-        print(f"Loading LoRA weights from {sam.lora_ckpt_path}")
-        lora_ckpt = torch.load(str(sam.lora_ckpt_path), map_location=device, weights_only=False)
-        msg_lora = model.load_state_dict(lora_ckpt['model'], strict=False)
-        print(f"LoRA Load status: {msg_lora}")
-
-    model.eval()
+    model = load_model_for_inference(cfg, device)
 
     collate = PaddingCollate(eight=False)
 
