@@ -16,6 +16,19 @@ from src.data.parity import (
 )
 
 
+def _velocity_loss(pred: torch.Tensor, target: torch.Tensor, loss_type: str, huber_beta: float) -> torch.Tensor:
+    """Per-component regression loss on (clipped) velocities.
+
+    'l2'    : mean squared error, i.e. the squared-norm objectives of paper Eq. (4) and (5).
+    'huber' : smooth-L1, more robust to the 1/(1-t) velocity amplification (default, used for stability under AMP).
+    """
+    if loss_type == "l2":
+        return F.mse_loss(pred, target, reduction="mean")
+    if loss_type == "huber":
+        return F.smooth_l1_loss(pred, target, reduction="mean", beta=huber_beta)
+    raise ValueError(f"loss_type must be 'huber' or 'l2', got {loss_type!r}")
+
+
 def safe_norm(x: torch.Tensor, dim: int = -1, keepdim: bool = False, eps: float = 1e-8) -> torch.Tensor:
     return torch.sqrt(torch.clamp(torch.sum(x * x, dim=dim, keepdim=keepdim), min=eps))
 
@@ -28,7 +41,8 @@ def flow_matching_loss(pred_x1: Tuple[torch.Tensor, ...], target_x1: Tuple[torch
                        weights: Optional[Tuple[float, float, float]] = None,
                        huber_beta: float = 0.25,
                        v_clip: float = 50.0,
-                       sigma_min: float = 1e-4) -> torch.Tensor:
+                       sigma_min: float = 1e-4,
+                       loss_type: str = "huber") -> torch.Tensor:
     if weights is None:
         w_trans, w_rot, w_ang = 1.0, 1.0, 1.0
     else:
@@ -65,9 +79,9 @@ def flow_matching_loss(pred_x1: Tuple[torch.Tensor, ...], target_x1: Tuple[torch
         vt2 = delta_true_ang / dt
         vp2 = delta_pred_ang / dt
 
-        losses.append(w_trans * F.smooth_l1_loss(vp0[mask], vt0[mask], reduction='mean', beta=huber_beta))
-        losses.append(w_rot * F.smooth_l1_loss(vp1[mask], vt1[mask], reduction='mean', beta=huber_beta))
-        losses.append(w_ang * F.smooth_l1_loss(vp2[mask], vt2[mask], reduction='mean', beta=huber_beta))
+        losses.append(w_trans * _velocity_loss(vp0[mask], vt0[mask], loss_type, huber_beta))
+        losses.append(w_rot * _velocity_loss(vp1[mask], vt1[mask], loss_type, huber_beta))
+        losses.append(w_ang * _velocity_loss(vp2[mask], vt2[mask], loss_type, huber_beta))
     else:
         losses.append(trans_t.new_tensor(0.0))
 
@@ -77,7 +91,7 @@ def flow_matching_loss(pred_x1: Tuple[torch.Tensor, ...], target_x1: Tuple[torch
 def symmetry_consistency_loss(pred_out: Tuple[torch.Tensor, ...], pred_sym_out: Tuple[torch.Tensor, ...],
                               x_t: Tuple[torch.Tensor, ...], x_t_sym: Tuple[torch.Tensor, ...],
                               t: torch.Tensor, mask: torch.Tensor, sigma_min: float = 1e-4,
-                              v_clip: float = 50.0, huber_beta: float = 0.25) -> torch.Tensor:
+                              v_clip: float = 50.0, huber_beta: float = 0.25, loss_type: str = "huber") -> torch.Tensor:
     """Parity-consistency loss: v(P x_t) should equal P v(x_t).
 
     Velocities are compared in x1-space (clamp-before-divide) for the same AMP-safety
@@ -110,9 +124,9 @@ def symmetry_consistency_loss(pred_out: Tuple[torch.Tensor, ...], pred_sym_out: 
 
     losses = []
     if mask.any():
-        losses.append(F.smooth_l1_loss(v_main_0[mask], target_v0[mask], reduction='mean', beta=huber_beta))
-        losses.append(F.smooth_l1_loss(v_main_1[mask], target_v1[mask], reduction='mean', beta=huber_beta))
-        losses.append(F.smooth_l1_loss(v_main_2[mask], target_v2[mask], reduction='mean', beta=huber_beta))
+        losses.append(_velocity_loss(v_main_0[mask], target_v0[mask], loss_type, huber_beta))
+        losses.append(_velocity_loss(v_main_1[mask], target_v1[mask], loss_type, huber_beta))
+        losses.append(_velocity_loss(v_main_2[mask], target_v2[mask], loss_type, huber_beta))
     else:
         losses.append(v_main_0.new_tensor(0.0))
 
@@ -129,7 +143,8 @@ def _clone_batch_with_chirality(batch: Dict[str, torch.Tensor], chirality: torch
 
 
 def compute_symmetry_loss(predict_fn, batch: Dict[str, torch.Tensor], t: torch.Tensor, seq_t: torch.Tensor, trans_t: torch.Tensor, rot_t: torch.Tensor, ang_t: torch.Tensor, mask: torch.Tensor,
-                             pred_out: Optional[Dict[str, torch.Tensor]] = None, v_pred: Optional[Tuple[torch.Tensor, ...]] = None, sigma_min: float = 1e-4) -> torch.Tensor:
+                             pred_out: Optional[Dict[str, torch.Tensor]] = None, v_pred: Optional[Tuple[torch.Tensor, ...]] = None, sigma_min: float = 1e-4,
+                             loss_type: str = "huber") -> torch.Tensor:
     if pred_out is None:
         pred_out = predict_fn(batch, t, seq_t, trans_t, rot_t, ang_t)
 
@@ -148,4 +163,4 @@ def compute_symmetry_loss(predict_fn, batch: Dict[str, torch.Tensor], t: torch.T
 
     return symmetry_consistency_loss(pred_states, pred_sym_states,
                                      (trans_t, rot_t, ang_t), (trans_p, rot_p, ang_p),
-                                     t, mask, sigma_min=sigma_min)
+                                     t, mask, sigma_min=sigma_min, loss_type=loss_type)

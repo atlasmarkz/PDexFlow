@@ -1,22 +1,15 @@
-# Core runtime dependencies for PDexFlow
-
-# Deep learning
+# Core runtime dependencies for PDexFlow (single source of truth: pyproject.toml)
 torch
-
-# Config
+numpy
+scipy
 hydra-core
 omegaconf
-
-# Data / IO
 biopython
 lmdb
 joblib
-
-# Utilities
 tqdm
 easydict
-numpy
+tensorboard
 
-# Optional (not used in current scaffold):
-esm
-scipy
+# Optional: frozen ESM-2 receptor features (esm.enable=true)
+# fair-esm

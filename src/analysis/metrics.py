@@ -1,28 +1,36 @@
 """Evaluation metrics for PDexFlow outputs.
 
-Includes chirality error, clash score, RMSD (Kabsch), and amino-acid recovery.
+Includes chirality error, RMSD (Kabsch), and Amino Acid Recovery (AAR).
 """
 from typing import Optional, Tuple
 
 import torch
 
 
-def chirality_error(N: torch.Tensor, CA: torch.Tensor, C: torch.Tensor, CB: torch.Tensor, chirality: torch.Tensor) -> torch.Tensor:
-    """Compute fraction of residues violating target chirality.
+def chirality_error(N: torch.Tensor, CA: torch.Tensor, C: torch.Tensor, CB: torch.Tensor, chirality: torch.Tensor,
+                    mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    """Fraction of residues whose CA chirality violates the requested handedness.
 
     Args:
-        N, CA, C, CB: (...,3) atom positions.
-        chirality: (...,) 0 for L, 1 for D.
+        N, CA, C, CB: (B,L,3) atom positions (or any (...,3) layout).
+        chirality: (B,) or (B,L) with 0 for L and 1 for D.
+        mask: optional bool mask selecting the residues to score. It should contain generated peptide
+            residues that own a CB atom (not GLY); receptor residues keep their native handedness and
+            glycine has no stereocentre, so neither belongs in the metric.
     Returns:
-        Scalar tensor: mean violation rate.
+        Scalar tensor: mean violation rate over the selected residues.
     """
     v1 = N - CA
     v2 = C - CA
     v3 = CB - CA
     triple = torch.einsum('...i,...i->...', torch.cross(v1, v2, dim=-1), v3)
+    chirality = chirality.reshape(*chirality.shape, *([1] * (triple.dim() - chirality.dim())))  # (B,) -> (B,1,...)
     expected_sign = torch.where(chirality.bool(), -1.0, 1.0)
     violations = (triple * expected_sign <= 0).float()
-    return violations.mean()
+    if mask is None:
+        return violations.mean()
+    mask = mask.to(violations.dtype)
+    return (violations * mask).sum() / mask.sum().clamp(min=1.0)
 
 
 def kabsch_rmsd(X: torch.Tensor, Y: torch.Tensor, mask: Optional[torch.Tensor] = None, eps: float = 1e-8) -> torch.Tensor:

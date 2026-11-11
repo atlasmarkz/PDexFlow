@@ -1,0 +1,62 @@
+# PDexFlow backbone training (mirror-symmetric strategy on PepMerge-style data).
+# Override on the CLI, e.g.  data.structure_dir=/path/to/PepMerge train.max_iters=2000
+data:
+  structure_dir: data/pepmerge       # one sub-directory per complex with peptide.pdb + pocket.pdb
+  cache_dir: .cache/pepmerge         # LMDB caches are built here on first run
+  split: train                       # train | test | all (test ids are listed in src/names.txt)
+  reset_cache: false                 # set true once after changing the parity convention
+
+train:
+  seed: 0
+  device: cuda                       # falls back to cpu when CUDA is unavailable
+  batch_size: 16
+  num_workers: 4
+  max_iters: 100000
+  save_freq: 5000
+  max_grad_norm: 1.0
+  use_amp: true
+  grad_accum_steps: 1
+  logdir: outputs/logs
+  optimizer:
+    lr: 1.0e-4
+    weight_decay: 0.0
+
+model:
+  trunk_type: geometric              # paper Sec. IV-C: RBF-biased self-attention + receptor cross-attention
+  n_rbf: 16
+  d_model: 256
+  n_layers: 6
+  n_heads: 8
+  dropout: 0.1
+  max_len: 512
+  aatype_vocab: 21
+  angle_dim: 5
+  coord_scale: 0.1
+
+flow:
+  sigma_trans: 0.1
+  use_ot: true                       # Mini-ROT (paper Eq. 13)
+  ot_mode: minibatch                 # minibatch | residue (legacy)
+  loss_type: huber                   # huber (robust, default) | l2 (squared norm of paper Eq. 4/5)
+  cfm_weight: 1.0
+  sym_weight: 1.0                    # lambda_sym of the symmetry consistency loss
+  seq_weight: 1.0                    # lambda_seq
+  sym_warmup_enable: false
+  sym_warmup_steps: 1
+  sym_warmup_start_weight: 0.0
+  num_steps: 30
+  angle_purify: true
+
+chi_lora:                            # Chiral-Bridge LoRA; usually enabled for fine-tuning on the real D-peptide set
+  enable: false
+  rank: 8
+  alpha: 16.0
+  dropout: 0.0
+  targets: [attn, ffn]
+  freeze_backbone: false
+
+esm:                                 # frozen ESM-2 receptor features (needs `pip install fair-esm`)
+  enable: false
+
+afi:                                 # Axial Feature Injection: not part of the paper, off by default
+  enable: false

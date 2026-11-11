@@ -13,39 +13,49 @@ Official code for the paper accepted at the *International Conference on Data Mi
 ```bash
 conda create -n pdexflow python=3.10
 conda activate pdexflow
-pip install -r requirements.txt
-pip install -e .
+pip install -e ".[dev]"          # add ".[esm]" for the optional frozen ESM-2 receptor features
 ```
 
 ## Usage
 
-Hydra configs are read from `configs/` (local, not tracked in this repository).
+All entry points are [Hydra](https://hydra.cc) apps with default configs in `configs/`; any value can be overridden on the
+command line. Data is expected as one folder per complex containing `peptide.pdb` and `pocket.pdb` / `receptor.pdb`
+(PepMerge layout). No data at hand? `python scripts/make_toy_dataset.py --out data/toy/pepmerge` creates a tiny synthetic set.
 
-**Train**
+**Train** the backbone (mirror-symmetric strategy, Symmetry Consistency Loss, Mini-ROT)
 
 ```bash
-python -W ignore -m src.experiments.train_pdexflow \
-    --config-path configs --config-name unichiflow_pure_L
+python -W ignore -m src.experiments.train_pdexflow data.structure_dir=data/pepmerge
 ```
 
-**Generate** (`chirality=0` → L-peptide, `chirality=1` → D-peptide)
+**Fine-tune** Chiral-Bridge LoRA on real D-peptides (backbone frozen)
+
+```bash
+python -W ignore -m src.experiments.train_lora_real_d data.structure_dir=data/real_d sample.ckpt_path=/path/to/backbone.pt
+```
+
+**Generate** (`sample.chirality_token=0` → L-peptide, `1` → D-peptide)
 
 ```bash
 python -W ignore scripts/inference_pdexflow.py \
-    --config-path configs --config-name unichiflow_inference \
-    sample.num_samples=100 sample.ckpt_path=/path/to/checkpoint.pt
+    sample.ckpt_path=/path/to/backbone.pt sample.chirality_token=1 sample.num_samples=100
+# with LoRA: add  chi_lora.enable=true sample.lora_ckpt_path=/path/to/lora.pt
 ```
 
-**Evaluate**
+**Evaluate** (AAR, CA-RMSD, chirality error, novelty, diversity; Rosetta scores are read from an optional external CSV)
 
 ```bash
-python -W ignore scripts/eval_pdexflow.py \
-    --config-path configs --config-name unichiflow_eval \
-    sample.ckpt_path=/path/to/checkpoint.pt
+python -W ignore scripts/eval_pdexflow.py sample.ckpt_path=/path/to/backbone.pt eval.dataset_x_mirror=true
 ```
 
-**Smoke test (CPU, no dataset needed)**
+**Test** (unit tests plus an end-to-end run of the four entry points on synthetic data, CPU, ~15 s)
 
 ```bash
-python scripts/smoke_cpu.py
+pytest test
+python scripts/smoke_cpu.py     # minimal training/sampling smoke test
 ```
+
+> Caches built before the parity convention was corrected (the mirrored `*_x_cache.lmdb` files) must be rebuilt once:
+> add `data.reset_cache=true`.
+
+How the code maps to the paper, and where it deliberately differs, is documented in [docs/paper_mapping.md](docs/paper_mapping.md).

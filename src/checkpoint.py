@@ -53,7 +53,7 @@ def load_backbone_into_lora(model: nn.Module, backbone_state_dict: Dict[str, Any
         print(f"Loaded {len(loaded_keys)} keys from backbone.")
         print(f"Skipped {len(skipped_keys)} keys from backbone (not found in LoRA model).")
         # Filter out LoRA params from missing list to see if we missed any backbone params
-        real_missing = [k for k in missing if "lora_" not in k and ".base." not in k]
+        real_missing = [k for k in missing if "lora_" not in k and ".base." not in k and not k.endswith("gate_logit")]  # LoRA-only params
         if real_missing:
             print(f"WARNING: The following backbone parameters were NOT loaded: {real_missing}")
         else:

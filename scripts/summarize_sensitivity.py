@@ -32,7 +32,7 @@ def main():
     ap.add_argument("--lambda_col", type=str, default="lambda_sym")
     ap.add_argument("--rank_col", type=str, default="lora_rank")
     ap.add_argument("--gate_col", type=str, default="gate_enabled")
-    ap.add_argument("--metrics", type=str, default="chiral_err,rmsd_ca,motif_acc", help="Comma-separated metric columns.")
+    ap.add_argument("--metrics", type=str, default="chiral_err,rmsd_ca,aar", help="Comma-separated metric columns.")
     args = ap.parse_args()
 
     with open(args.csv_path, "r", encoding="utf-8") as f:

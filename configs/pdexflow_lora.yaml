@@ -1,0 +1,69 @@
+# Chiral-Bridge LoRA fine-tuning on a real D-peptide set (paper Sec. IV-B): the pre-trained backbone is frozen and only the
+# LoRA matrices and the chiral gate gamma are trained. Run with the module  src.experiments.train_lora_real_d.
+# Needs sample.ckpt_path=<backbone checkpoint trained with pdexflow_training.yaml> (same model.* sizes).
+data:
+  structure_dir: data/real_d         # folder with D-peptide PDB files (searched recursively)
+  cache_dir: .cache/real_d
+  split: train
+  reset_cache: false
+  chirality_mode: real_d             # real_d: coordinates as-is | mirrored_l_to_d: apply the parity operator while parsing
+  peptide_subdir: null
+  skip_receptor: true
+
+train:
+  seed: 0
+  device: cuda                       # falls back to cpu when CUDA is unavailable
+  batch_size: 16
+  num_workers: 4
+  max_iters: 5000
+  save_freq: 500
+  max_grad_norm: 1.0
+  use_amp: true
+  grad_accum_steps: 1
+  logdir: outputs/logs
+  optimizer:
+    lr: 1.0e-4
+    weight_decay: 0.0
+
+model:
+  trunk_type: geometric              # paper Sec. IV-C: RBF-biased self-attention + receptor cross-attention
+  n_rbf: 16
+  d_model: 256
+  n_layers: 6
+  n_heads: 8
+  dropout: 0.1
+  max_len: 512
+  aatype_vocab: 21
+  angle_dim: 5
+  coord_scale: 0.1
+
+flow:
+  sigma_trans: 0.1
+  use_ot: true                       # Mini-ROT (paper Eq. 13)
+  ot_mode: minibatch                 # minibatch | residue (legacy)
+  loss_type: huber                   # huber (robust, default) | l2 (squared norm of paper Eq. 4/5)
+  cfm_weight: 1.0
+  sym_weight: 1.0                    # lambda_sym of the symmetry consistency loss
+  seq_weight: 1.0                    # lambda_seq
+  sym_warmup_enable: false
+  sym_warmup_steps: 1
+  sym_warmup_start_weight: 0.0
+  num_steps: 30
+  angle_purify: true
+
+chi_lora:                            # Chiral-Bridge LoRA
+  enable: true
+  rank: 8
+  alpha: 16.0
+  dropout: 0.0
+  targets: [attn, ffn]
+  freeze_backbone: true
+
+esm:                                 # frozen ESM-2 receptor features (needs `pip install fair-esm`)
+  enable: false
+
+afi:                                 # Axial Feature Injection: not part of the paper, off by default
+  enable: false
+
+sample:
+  ckpt_path: null                    # pre-trained backbone checkpoint (required for fine-tuning)

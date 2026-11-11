@@ -140,6 +140,8 @@ class FlowConfig:
     # 'minibatch': Mini-ROT of paper Eq. 13 (assignment between the B priors and B data samples of a minibatch)
     # 'residue':   legacy within-peptide residue-level assignment
     ot_mode: str = "minibatch"
+    # 'huber' (default, robust) or 'l2' (squared norm, paper Eq. 4/5) for L_flow and L_sym
+    loss_type: str = "huber"
     # per-component weights for velocity flow-matching (trans, rot, ang)
     cfm_w_trans: float = 1.0
     cfm_w_rot: float = 1.0
@@ -229,7 +231,7 @@ class PDexFlowModel(nn.Module):
                  seq_weight: float = 1.0, angle_dim: int = 5, use_ot: bool = True,
                  cfm_w_trans: float = 1.0, cfm_w_rot: float = 1.0, cfm_w_ang: float = 1.0,
                  coord_scale: float = 0.1, afi: Optional[Dict] = None,
-                 trunk_type: str = "geometric", n_rbf: int = 16, ot_mode: str = "minibatch"):
+                 trunk_type: str = "geometric", n_rbf: int = 16, ot_mode: str = "minibatch", loss_type: str = "huber"):
         super().__init__()
         self.d_model = int(d_model)
         self.max_len = int(max_len)
@@ -245,6 +247,7 @@ class PDexFlowModel(nn.Module):
             seq_weight=float(seq_weight),
             use_ot=bool(use_ot),
             ot_mode=str(ot_mode),
+            loss_type=str(loss_type),
             cfm_w_trans=float(cfm_w_trans),
             cfm_w_rot=float(cfm_w_rot),
             cfm_w_ang=float(cfm_w_ang),
@@ -776,6 +779,7 @@ class PDexFlowModel(nn.Module):
             mask,
             weights=(self.flow_cfg.cfm_w_trans, self.flow_cfg.cfm_w_rot, self.flow_cfg.cfm_w_ang),
             sigma_min=sigma_min,
+            loss_type=self.flow_cfg.loss_type,
         )
 
         # Skip symmetry loss computation entirely if weight is zero to avoid
@@ -793,6 +797,7 @@ class PDexFlowModel(nn.Module):
                 mask=mask,
                 pred_out=out,
                 sigma_min=sigma_min,
+                loss_type=self.flow_cfg.loss_type,
             )
         else:
             sym_loss = torch.tensor(0.0, device=cfm_loss.device)

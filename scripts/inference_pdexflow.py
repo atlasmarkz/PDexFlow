@@ -34,14 +34,13 @@ from src.data.pepmerge_dataset import PepMergeDataset
 from src.data import utils as du
 from src.data.writers import save_pdb
 from src.data.pep_constants import BBHeavyAtom
-from src.models.chiralformer import PDexFlowModel
 from src.checkpoint import load_backbone_into_lora
-from src.experiments.components import resolve_inference_device
+from src.experiments.components import build_model, resolve_inference_device
  
 
 
 config_path = os.path.join(os.path.dirname(__file__), "..", "configs")
-config_name = "unichiflow_inference.yaml"
+config_name = "pdexflow_inference.yaml"
 
 
 @hydra.main(version_base=None, config_path=config_path, config_name=config_name)
@@ -89,18 +88,7 @@ def main(cfg: DictConfig):
             skip_receptor=bool(cfg.data.get("skip_receptor", True)),
         )
 
-    model = PDexFlowModel(
-        d_model=int(cfg.model.d_model),
-        n_layers=int(cfg.model.n_layers),
-        n_heads=int(cfg.model.n_heads),
-        dropout=float(cfg.model.dropout),
-        max_len=int(cfg.model.max_len),
-        aatype_vocab=int(cfg.model.aatype_vocab),
-        sigma_trans=float(cfg.flow.sigma_trans),
-        chi_lora=cfg.get("chi_lora"),
-        esm=cfg.get("esm"),
-        use_ot=bool(cfg.flow.get("use_ot", True)),
-    ).to(device)
+    model = build_model(cfg, include_multitask_weights=False).to(device)  # same construction path as training
 
     if sam.ckpt_path:
         print(f"Loading backbone from {sam.ckpt_path}")

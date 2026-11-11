@@ -105,6 +105,10 @@ def build_model(cfg: DictConfig, *, include_multitask_weights: bool) -> PDexFlow
         angle_dim=int(cfg.model.get("angle_dim", 5)),
         use_ot=bool(cfg.flow.get("use_ot", True)),
         coord_scale=float(cfg.model.get("coord_scale", 0.1)),
+        trunk_type=str(cfg.model.get("trunk_type", "geometric")),
+        n_rbf=int(cfg.model.get("n_rbf", 16)),
+        ot_mode=str(cfg.flow.get("ot_mode", "minibatch")),
+        loss_type=str(cfg.flow.get("loss_type", "huber")),
     )
     if include_multitask_weights:
         kwargs["cfm_weight"] = float(cfg.flow.get("cfm_weight", 1.0))

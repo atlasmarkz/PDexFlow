@@ -50,10 +50,9 @@ logs/
 .pytest_cache/
 .cache/
 
-# Local config overrides (keep .example.yaml tracked)
+# Local config overrides (the shipped pdexflow_*.yaml configs are tracked)
 config.yaml
-configs/*.yaml
-!configs/*.example.yaml
+configs/local/
 
 # PDB data files (raw structure data)
 *.pdb

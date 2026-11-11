@@ -6,6 +6,28 @@ build-backend = "setuptools.build_meta"
 name = "pdexflow"
 version = "0.1.0"
 description = "PDexFlow: parity-harmonized flow matching for de novo D-peptide design"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.1",
+    "numpy",
+    "scipy",
+    "omegaconf",
+    "hydra-core",
+    "tqdm",
+    "easydict",
+    "lmdb",
+    "joblib",
+    "biopython",
+    "tensorboard",
+]
+
+[project.optional-dependencies]
+esm = ["fair-esm"]
+dev = ["pytest", "ruff", "mypy"]
+
+[tool.setuptools.packages.find]
+include = ["src", "src.*"]
 
 [tool.ruff]
 line-length = 100

@@ -21,11 +21,10 @@ from src.data.pep_constants import BBHeavyAtom
 from src.data.pep_dataloader import PaddingCollate, PepDataset
 from src.data.writers import save_pdb
 from src.analysis.metrics import aar_accuracy, chirality_error, kabsch_rmsd
-from src.models.chiralformer import PDexFlowModel
-from src.experiments.components import resolve_inference_device
+from src.experiments.components import build_model, resolve_inference_device
 
-config_path = os.path.abspath("configs")
-config_name = "unichiflow_inference.yaml"
+config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "configs"))  # independent of the cwd
+config_name = "pdexflow_eval.yaml"
 
 
 def _device_sync(device: str):
@@ -371,18 +370,7 @@ def main(cfg: DictConfig):
         ref_bank = _load_reference_bank(ds_ref, max_samples=int(cfg.eval.reference.max_samples))
         ref_features = [_descriptor_from_ca(r["ca"]) for r in ref_bank]
 
-    model = PDexFlowModel(
-        d_model=int(cfg.model.d_model),
-        n_layers=int(cfg.model.n_layers),
-        n_heads=int(cfg.model.n_heads),
-        dropout=float(cfg.model.dropout),
-        max_len=int(cfg.model.max_len),
-        aatype_vocab=int(cfg.model.aatype_vocab),
-        sigma_trans=float(cfg.flow.sigma_trans),
-        chi_lora=cfg.get("chi_lora"),
-        esm=cfg.get("esm"),
-        use_ot=bool(cfg.flow.get("use_ot", True)),
-    ).to(device)
+    model = build_model(cfg, include_multitask_weights=False).to(device)  # same construction path as training
 
     sam = cfg.sample
     if not sam.ckpt_path:
@@ -400,6 +388,7 @@ def main(cfg: DictConfig):
     max_eval = min(len(ds_eval), int(cfg.sample.max_eval))
     num_steps = int(sam.get("num_steps", cfg.flow.get("num_steps", 30)))
     hard_decoder = bool(sam.get("use_hard_decoder", True))
+    chirality_token = int(sam.get("chirality_token", 1 if bool(cfg.eval.get("dataset_x_mirror", False)) else 0))
     out_dir = str(cfg.sample.output_dir)
     os.makedirs(out_dir, exist_ok=True)
 
@@ -411,7 +400,8 @@ def main(cfg: DictConfig):
     for idx in pbar:
         data_list = [deepcopy(ds_eval[idx])]
         batch = collate(data_list)
-        batch["chirality"] = batch.get("chirality", batch.get("chirality_token", torch.zeros((len(data_list),), dtype=torch.long)))
+        # Chirality condition: explicit `sample.chirality_token`, else D for the parity-mirrored split and L otherwise.
+        batch["chirality"] = torch.full((len(data_list),), chirality_token, dtype=torch.long)
         batch = du.recursive_to(batch, device)
 
         _device_reset_peak_mem(device)
@@ -437,9 +427,10 @@ def main(cfg: DictConfig):
         pep_mask = batch["generate_mask"].bool() & batch["res_mask"].bool()
         aa_mask = pep_mask
 
-        motif_acc = _safe_float(aar_accuracy(sample["seq"], batch["aa"], mask=aa_mask))
+        aar = _safe_float(aar_accuracy(sample["seq"], batch["aa"], mask=aa_mask))
         bb_pred = _gather_backbone(pos15_pred)
-        chiral_err = _safe_float(chirality_error(bb_pred["N"], bb_pred["CA"], bb_pred["C"], bb_pred["CB"], batch["chirality"]))
+        chiral_mask = pep_mask & mask15_pred[..., BBHeavyAtom.CB].bool()  # generated residues with a decoded CB (no GLY / unknown tokens)
+        chiral_err = _safe_float(chirality_error(bb_pred["N"], bb_pred["CA"], bb_pred["C"], bb_pred["CB"], batch["chirality"], mask=chiral_mask))
         bb_gt = _gather_backbone(batch["pos_heavyatom"])
         rmsd = _safe_float(kabsch_rmsd(_select_masked(bb_pred["CA"], aa_mask), _select_masked(bb_gt["CA"], aa_mask), mask=aa_mask))
 
@@ -458,7 +449,7 @@ def main(cfg: DictConfig):
             "idx": idx,
             "peptide_len": peptide_len,
             "receptor_len": receptor_len,
-            "motif_acc": motif_acc,
+            "aar": aar,
             "chiral_err": chiral_err,
             "rmsd_ca": rmsd,
             "latency_ms": latency_ms,
@@ -500,7 +491,7 @@ def main(cfg: DictConfig):
             save_pdb(pred_data, path=os.path.join(save_dir, "pred_eval.pdb"))
             save_pdb(gt_data, path=os.path.join(save_dir, "gt_eval.pdb"))
 
-        pbar.set_description(f"motif {_mean([r['motif_acc'] for r in per_sample]):.3f} | chiral {_mean([r['chiral_err'] for r in per_sample]):.3f} | rmsd {_mean([r['rmsd_ca'] for r in per_sample]):.3f}")
+        pbar.set_description(f"AAR {_mean([r['aar'] for r in per_sample]):.3f} | chiral {_mean([r['chiral_err'] for r in per_sample]):.3f} | rmsd {_mean([r['rmsd_ca'] for r in per_sample]):.3f}")
 
     if not per_sample:
         raise RuntimeError("No samples were evaluated. Check dataset and max_eval settings.")
@@ -525,7 +516,7 @@ def main(cfg: DictConfig):
                 {
                     "bucket": g,
                     "n": len(items),
-                    "motif_acc_mean": _mean([float(x["motif_acc"]) for x in items]),
+                    "aar_mean": _mean([float(x["aar"]) for x in items]),
                     "chiral_err_mean": _mean([float(x["chiral_err"]) for x in items]),
                     "rmsd_ca_mean": _mean([float(x["rmsd_ca"]) for x in items]),
                     "latency_ms_mean": _mean([float(x["latency_ms"]) for x in items]),
@@ -570,7 +561,7 @@ def main(cfg: DictConfig):
 
     summary = {
         "n_eval": len(per_sample),
-        "motif_recovery_mean": _mean([float(r["motif_acc"]) for r in per_sample]),
+        "aar_mean": _mean([float(r["aar"]) for r in per_sample]),
         "chiral_error_mean": _mean([float(r["chiral_err"]) for r in per_sample]),
         "rmsd_ca_mean": _mean([float(r["rmsd_ca"]) for r in per_sample]),
         "latency_ms_mean": _mean([float(r["latency_ms"]) for r in per_sample]),

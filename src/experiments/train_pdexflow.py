@@ -30,7 +30,7 @@ _RAD2DEG = 180.0 / math.pi
 
 
 config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "configs"))
-config_name = "unichiflow_training.yaml"
+config_name = "pdexflow_training.yaml"
 
 
 class BestCheckpointKeeper:

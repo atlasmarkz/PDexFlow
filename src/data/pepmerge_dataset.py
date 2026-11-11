@@ -172,8 +172,19 @@ class PepMergeDataset(PepDataset):
             for root, dirs, files in os.walk(self.structure_dir):
                 if 'peptide.pdb' in files and 'receptor.pdb' in files:
                     sample_dirs.append(root)
+            sample_dirs = self._filter_split(sample_dirs)
             if len(sample_dirs) > 0:
                 self._preprocess_structures(sample_dirs)
+
+    def _filter_split(self, sample_dirs):
+        """Honour the split encoded in the dataset name (train / test / all); test ids live in src/names.txt."""
+        if 'train' not in self.name and 'test' not in self.name:
+            return sample_dirs
+        names_path = os.path.join(os.path.dirname(__file__), '..', 'names.txt')
+        with open(names_path, 'r') as f:
+            test_ids = {line.strip() for line in f if line.strip()}
+        is_test = 'test' in self.name
+        return [d for d in sample_dirs if (os.path.basename(d) in test_ids) == is_test]
 
     def _preprocess_structures(self, dir_list):
         tasks = []

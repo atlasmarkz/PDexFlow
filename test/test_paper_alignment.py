@@ -161,3 +161,13 @@ def test_training_step_and_sampling_finite_with_minibatch_ot_and_lora():
     model.eval()
     s = model.sample(batch, num_steps=4)
     assert torch.isfinite(s["trans"]).all()
+
+
+def test_l2_loss_type_matches_paper_objective_and_trains():
+    model = _tiny(loss_type="l2")
+    batch = synthesize_batch(B=2, L=8, n_peptide=5)
+    out = model(batch)
+    out["loss"].backward()
+    assert torch.isfinite(out["loss"]) and model.flow_cfg.loss_type == "l2"
+    with pytest.raises(ValueError):
+        _tiny(loss_type="nope")(batch)
