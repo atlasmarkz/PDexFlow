@@ -1,6 +1,8 @@
 <h1><img src="assets/logo.svg" alt="PDexFlow logo" width="72" align="absmiddle"> PDexFlow</h1>
 
-**Parity-Harmonized Flow Matching for De Novo D-Peptide Design** — generate L- and D-peptide binders with symmetry-consistent flow matching and hard geometric constraints.
+**Escaping the Mirror Trap: Parity-Harmonized Flow Matching on Riemannian Manifolds for Peptide Design** — generate L- and D-peptide binders with symmetry-consistent flow matching and hard geometric constraints.
+
+Code for the paper submitted to the *International Conference on Data Mining (ICDM) 2026*.
 
 <p align="center">
   <img src="assets/architecture.png" alt="PDexFlow architecture" width="900">
