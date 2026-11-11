@@ -16,7 +16,7 @@ from pathlib import Path
 
 
 def mirror_pdb_parity(input_path: str, output_path: str):
-    """镜像 PDB 文件 - 使用项目 parity 规则 (-x, -y, z)
+    """镜像 PDB 文件 - 使用论文 parity 规则: 空间反演 (x, y, z) -> (-x, -y, -z)
 
     Args:
         input_path: 输入 PDB 路径
@@ -36,8 +36,9 @@ def mirror_pdb_parity(input_path: str, output_path: str):
 
                 x_mirrored = -x
                 y_mirrored = -y
+                z_mirrored = -z
 
-                line = line[:30] + f'{x_mirrored:8.3f}' + f'{y_mirrored:8.3f}' + f'{z:8.3f}' + line[54:]
+                line = line[:30] + f'{x_mirrored:8.3f}' + f'{y_mirrored:8.3f}' + f'{z_mirrored:8.3f}' + line[54:]
             except ValueError:
                 pass
         mirrored_lines.append(line)
@@ -98,7 +99,7 @@ def main():
     print(f"找到 {len(sample_dirs)} 个样本目录")
     print(f"输入: {input_dir}")
     print(f"输出: {output_dir}")
-    print(f"镜像方式: parity镜像 (x, y, z) -> (-x, -y, z)")
+    print(f"镜像方式: parity镜像 (空间反演) (x, y, z) -> (-x, -y, -z)")
     print(f"  这是坐标变换模拟 D-肽手性，非真正的 D-氨基酸")
 
     # 创建输出根目录

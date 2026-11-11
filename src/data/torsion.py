@@ -166,6 +166,12 @@ def full_atom_reconstruction(R_bb: torch.Tensor, t_bb: torch.Tensor, angles: tor
     """
     N, L = aa.size()
 
+    # The data pipeline measures psi as the N-CA-C-O dihedral (get_psi_angle), whereas the AF2
+    # rigid-group template places O at dihedral 0 for rotation angle 0 with the opposite orientation,
+    # i.e. the template angle is psi + pi. Without this offset O is mis-placed by ~2.1 A (verified in
+    # test/test_parity_roundtrip.py), so reconstruct(measure(structure)) == structure.
+    angles = torch.cat([angles[..., :1] + math.pi, angles[..., 1:]], dim=-1)
+
     rot_psi, rot_chi1, rot_chi2, rot_chi3, rot_chi4 = _make_psi_chi_rotation_matrices(angles).unbind(dim=2)
     # (B, N, 3, 3)
     zeros = torch.zeros_like(t_bb)

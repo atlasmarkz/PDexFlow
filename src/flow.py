@@ -12,7 +12,7 @@ from src.data.parity import (
     apply_parity_state,
     parity_positions,
     parity_rotvec,
-    parity_torsions,
+    parity_torsion_velocity,
 )
 
 
@@ -102,7 +102,7 @@ def symmetry_consistency_loss(pred_out: Tuple[torch.Tensor, ...], pred_sym_out: 
     # Target for main velocity = P applied to sym-branch velocity.
     target_v0 = parity_positions(delta_trans_sym / dt)
     target_v1 = parity_rotvec(delta_rot_sym / dt)
-    target_v2 = parity_torsions(delta_ang_sym / dt)
+    target_v2 = parity_torsion_velocity(delta_ang_sym / dt)
 
     v_main_0 = delta_trans / dt
     v_main_1 = delta_rot / dt

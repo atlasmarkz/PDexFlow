@@ -58,8 +58,8 @@ configs/*.yaml
 # PDB data files (raw structure data)
 *.pdb
 
-# Data directory (source datasets)
-data/
+# Data directory (source datasets) -- root only, so that src/data/ stays tracked
+/data/
 
 # Cache directories
 .cache/
