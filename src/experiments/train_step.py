@@ -1,8 +1,8 @@
-"""One-iteration train step for UniChiFlow backbone training.
+"""One-iteration train step for PDexFlow backbone training.
 
 Step 3 of the Trainer refactor roadmap: the inner-loop orchestration
 (autocast → backward → grad_accum gate → NaN guards → opt step) is moved
-out of `train_unichiflow.py` main() into a pure function so both trainers
+out of `train_pdexflow.py` main() into a pure function so both trainers
 and future subclasses can share it.
 
 Bit-level-equivalent to the prior inline code: operation order is preserved,

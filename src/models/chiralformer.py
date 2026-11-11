@@ -210,8 +210,8 @@ class ChiLoRAConfig:
         )
 
 
-class UniChiFlowModel(nn.Module):
-    """Core UniChiFlow with optional ChiLoRA adapters.
+class PDexFlowModel(nn.Module):
+    """Core PDexFlow with optional ChiLoRA adapters.
 
     Learns to predict x1 from (xt, t, chirality_token, pocket context) using a transformer.
     State = (seq, CA-translation, backbone-rotation, torsion(psi+chi)).
@@ -919,3 +919,7 @@ class UniChiFlowModel(nn.Module):
             'rotmats': rot,
             'angles': ang,
         }
+
+
+# Backward-compatible alias: the class was previously named UniChiFlowModel.
+UniChiFlowModel = PDexFlowModel

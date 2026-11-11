@@ -1,4 +1,4 @@
-# Core runtime dependencies for UniChiflow scaffold (ChiLoRA excluded)
+# Core runtime dependencies for PDexFlow
 
 # Deep learning
 torch

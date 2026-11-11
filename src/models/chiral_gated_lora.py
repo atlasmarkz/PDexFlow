@@ -1,4 +1,4 @@
-"""Chiral-gated LoRA layers for UniChiFlow."""
+"""Chiral-gated LoRA layers for PDexFlow."""
 import math
 from typing import Optional
 

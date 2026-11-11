@@ -1,10 +1,10 @@
 """
-Minimal forward pass test for UniChiflow on RTX 3080.
+Minimal forward pass test for PDexFlow on RTX 3080.
 No checkpoint needed - tests that the model architecture runs.
 """
 import torch
 
-from src.models.chiralformer import UniChiFlowModel
+from src.models.chiralformer import PDexFlowModel
 from src.data import so3, torus
 
 
@@ -35,7 +35,7 @@ def test_forward_pass():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
 
-    model = UniChiFlowModel(
+    model = PDexFlowModel(
         d_model=128,
         n_layers=4,
         n_heads=4,
@@ -80,7 +80,7 @@ def test_ode_sampling():
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    model = UniChiFlowModel(
+    model = PDexFlowModel(
         d_model=128,
         n_layers=4,
         n_heads=4,
@@ -150,7 +150,7 @@ def test_memory_usage():
         torch.cuda.empty_cache()
         mem_before = torch.cuda.memory_allocated() / 1024**2
 
-        model = UniChiFlowModel(
+        model = PDexFlowModel(
             d_model=256,
             n_layers=6,
             n_heads=8,
@@ -178,7 +178,7 @@ def test_memory_usage():
 
 
 def main():
-    print("UniChiflow Forward Pass Test (RTX 3080 compatible)")
+    print("PDexFlow Forward Pass Test (RTX 3080 compatible)")
     print("=" * 60)
 
     try:
@@ -190,7 +190,7 @@ def main():
         print("ALL TESTS PASSED")
         print("=" * 60)
         print("\nTo run inference with a real checkpoint:")
-        print("  python -W ignore -m src.scripts.inference_unichiflow \\")
+        print("  python -W ignore -m src.scripts.inference_pdexflow \\")
         print("      sample.ckpt_path=/path/to/checkpoint.pt \\")
         print("      sample.num_samples=1 \\")
         print("      sample.num_steps=30")

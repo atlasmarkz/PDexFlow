@@ -1,8 +1,8 @@
-"""Shared builders for UniChiFlow training scripts.
+"""Shared builders for PDexFlow training scripts.
 
 Step 2 of the Trainer refactor roadmap: extract the setup-phase construction
 (dataset, dataloader, model, optimizer, checkpoint load) so the two trainers
-(`train_unichiflow.py`, `train_lora_real_d.py`) call into identical factories.
+(`train_pdexflow.py`, `train_lora_real_d.py`) call into identical factories.
 
 No behavior change. Each function reproduces the exact construction the inline
 code used to perform — pre-existing inconsistencies between the two scripts
@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader, Dataset
 from src.checkpoint import load_backbone_into_lora
 from src.data.pep_dataloader import DualPepDataset, PaddingCollate, TwinUniversePepDataset
 from src.data.real_d_pep_dataset import RealDPepDataset
-from src.models.chiralformer import UniChiFlowModel
+from src.models.chiralformer import PDexFlowModel
 
 
 DatasetKind = Literal["pepmerge", "real_d"]
@@ -83,8 +83,8 @@ def inf_iterator(loader: DataLoader):
             yield batch
 
 
-def build_model(cfg: DictConfig, *, include_multitask_weights: bool) -> UniChiFlowModel:
-    """Construct UniChiFlowModel from cfg.
+def build_model(cfg: DictConfig, *, include_multitask_weights: bool) -> PDexFlowModel:
+    """Construct PDexFlowModel from cfg.
 
     `include_multitask_weights` flag preserves the pre-existing asymmetry:
     the backbone trainer wires cfm_weight/sym_weight through, the LoRA
@@ -112,10 +112,10 @@ def build_model(cfg: DictConfig, *, include_multitask_weights: bool) -> UniChiFl
     # Pass AFI config if present
     if cfg.get("afi") is not None:
         kwargs["afi"] = dict(cfg.get("afi", {}))
-    return UniChiFlowModel(**kwargs)
+    return PDexFlowModel(**kwargs)
 
 
-def build_optimizer(model: UniChiFlowModel, cfg: DictConfig, *, trainable_only: bool) -> torch.optim.Optimizer:
+def build_optimizer(model: PDexFlowModel, cfg: DictConfig, *, trainable_only: bool) -> torch.optim.Optimizer:
     """AdamW over all params (backbone) or only requires_grad params (LoRA)."""
     if trainable_only:
         params = [p for p in model.parameters() if p.requires_grad]
@@ -128,7 +128,7 @@ def build_optimizer(model: UniChiFlowModel, cfg: DictConfig, *, trainable_only: 
     )
 
 
-def load_initial_weights(model: UniChiFlowModel, cfg: DictConfig, device: str) -> UniChiFlowModel:
+def load_initial_weights(model: PDexFlowModel, cfg: DictConfig, device: str) -> PDexFlowModel:
     """Load a pre-trained backbone into the model via the LoRA-aware loader.
 
     Mirrors `train_lora_real_d.py`'s original behavior. Returns the (possibly

@@ -1,4 +1,4 @@
-"""Inference entrypoint for UniChiFlow.
+"""Inference entrypoint for PDexFlow.
 
 Device selection goes through `resolve_inference_device` (components.py), which
 auto-falls-back `cuda -> mps -> cpu` so the same yaml configs work on both a
@@ -34,7 +34,7 @@ from src.data.pepmerge_dataset import PepMergeDataset
 from src.data import utils as du
 from src.data.writers import save_pdb
 from src.data.pep_constants import BBHeavyAtom
-from src.models.chiralformer import UniChiFlowModel
+from src.models.chiralformer import PDexFlowModel
 from src.checkpoint import load_backbone_into_lora
 from src.experiments.components import resolve_inference_device
  
@@ -89,7 +89,7 @@ def main(cfg: DictConfig):
             skip_receptor=bool(cfg.data.get("skip_receptor", True)),
         )
 
-    model = UniChiFlowModel(
+    model = PDexFlowModel(
         d_model=int(cfg.model.d_model),
         n_layers=int(cfg.model.n_layers),
         n_heads=int(cfg.model.n_heads),
@@ -140,7 +140,7 @@ def main(cfg: DictConfig):
         # overwrite chirality (0=L,1=D) for decoding
         batch['chirality'] = torch.full((len(data_list),), int(sam.chirality_token), dtype=torch.long)
 
-        # Coordinate scaling lives entirely inside UniChiFlowModel now:
+        # Coordinate scaling lives entirely inside PDexFlowModel now:
         #   - sample() scales batch['pos_heavyatom'] on entry,
         #   - sample() unscales trans on return,
         # so batch and model outputs are consistently in raw angstroms here.

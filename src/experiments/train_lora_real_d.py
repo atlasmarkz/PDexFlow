@@ -46,7 +46,7 @@ def main(cfg: DictConfig):
     # If freeze_backbone is enabled, only train LoRA parameters
     if cfg.chi_lora.enable and cfg.chi_lora.freeze_backbone:
         print("Freezing backbone, training only LoRA parameters.")
-        # UniChiFlowModel._apply_chi_lora performs the actual freeze in __init__;
+        # PDexFlowModel._apply_chi_lora performs the actual freeze in __init__;
         # this branch is kept for the log line and so the optimizer sees the
         # post-freeze requires_grad state when build_optimizer filters.
 
@@ -90,7 +90,7 @@ def main(cfg: DictConfig):
     for step in pbar:
         try:
             batch = du.recursive_to(next(it), device)
-            # Coordinate scaling is handled inside UniChiFlowModel.corrupt_batch via
+            # Coordinate scaling is handled inside PDexFlowModel.corrupt_batch via
             # self.coord_scale. Scripts pass raw angstroms; no manual pre-scale here.
 
             loss_dict = model(batch)

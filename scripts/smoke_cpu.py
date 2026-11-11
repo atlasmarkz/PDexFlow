@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CPU smoke test for UniChiFlow.
+"""CPU smoke test for PDexFlow.
 
 What it verifies (no GPU, no hydra, no real dataset, no ESM):
   1. Model constructs, forward + backward finish without NaN/Inf.
@@ -29,7 +29,7 @@ import torch.nn.functional as F
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data.pep_constants import BBHeavyAtom
-from src.models.chiralformer import UniChiFlowModel
+from src.models.chiralformer import PDexFlowModel
 
 
 # Residue index → 3-letter name, just for PDB dump (order matches the ordering
@@ -42,14 +42,14 @@ _AA_THREE = [
 ]
 
 
-def build_tiny_model(device: str = "cpu") -> UniChiFlowModel:
+def build_tiny_model(device: str = "cpu") -> PDexFlowModel:
     """Construct a deliberately small model so one CPU step stays under ~1s.
 
     `esm=None` disables the ESM conditioner entirely — no ESM weights, no
     biopython, no fair-esm. The transformer trunk still runs end-to-end, which
     is what we actually want to smoke-test.
     """
-    model = UniChiFlowModel(
+    model = PDexFlowModel(
         d_model=64,
         n_layers=2,
         n_heads=4,
@@ -117,7 +117,7 @@ def synthesize_batch(
     return {k: v.to(device) for k, v in batch.items()}
 
 
-def train_loop(model: UniChiFlowModel, batch: dict, n_steps: int, lr: float = 1e-3):
+def train_loop(model: PDexFlowModel, batch: dict, n_steps: int, lr: float = 1e-3):
     """Manual optimizer loop — no hydra, no AMP, no scaler, no grad accum."""
     optim = torch.optim.AdamW(model.parameters(), lr=lr)
     losses = []
@@ -156,7 +156,7 @@ def train_loop(model: UniChiFlowModel, batch: dict, n_steps: int, lr: float = 1e
     return losses
 
 
-def sample_and_diagnose(model: UniChiFlowModel, batch: dict, num_steps: int = 20):
+def sample_and_diagnose(model: PDexFlowModel, batch: dict, num_steps: int = 20):
     """Run one sampling pass and print diagnostics."""
     model.eval()
     out = model.sample(batch, num_steps=num_steps)
@@ -236,7 +236,7 @@ def main():
     device = "cpu"
     torch.manual_seed(args.seed)
 
-    print(f"== UniChiFlow CPU smoke test ==")
+    print(f"== PDexFlow CPU smoke test ==")
     print(f"  device: {device}  torch: {torch.__version__}")
     print(f"  batch: B={args.batch}  L={args.length}  train_steps: {args.steps}")
 

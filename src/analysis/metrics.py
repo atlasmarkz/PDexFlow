@@ -1,4 +1,4 @@
-"""Evaluation metrics for UniChiFlow outputs.
+"""Evaluation metrics for PDexFlow outputs.
 
 Includes chirality error, clash score, RMSD (Kabsch), and amino-acid recovery.
 """

@@ -21,7 +21,7 @@ from src.data.pep_constants import BBHeavyAtom
 from src.data.pep_dataloader import PaddingCollate, PepDataset
 from src.data.writers import save_pdb
 from src.analysis.metrics import aar_accuracy, chirality_error, kabsch_rmsd
-from src.models.chiralformer import UniChiFlowModel
+from src.models.chiralformer import PDexFlowModel
 from src.experiments.components import resolve_inference_device
 
 config_path = os.path.abspath("configs")
@@ -371,7 +371,7 @@ def main(cfg: DictConfig):
         ref_bank = _load_reference_bank(ds_ref, max_samples=int(cfg.eval.reference.max_samples))
         ref_features = [_descriptor_from_ca(r["ca"]) for r in ref_bank]
 
-    model = UniChiFlowModel(
+    model = PDexFlowModel(
         d_model=int(cfg.model.d_model),
         n_layers=int(cfg.model.n_layers),
         n_heads=int(cfg.model.n_heads),

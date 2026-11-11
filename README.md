@@ -1,8 +1,10 @@
-# UniChiflow
+<h1><img src="assets/logo.svg" alt="PDexFlow logo" width="72" align="absmiddle"> PDexFlow</h1>
 
-**UniChiflow: Parity-Equivariant Flow Matching for D-Peptide Design**
+**Parity-Harmonized Flow Matching for De Novo D-Peptide Design**
 
-UniChiflow is a state-of-the-art flow matching model designed for generating **D-peptides** (and mixed-chirality peptides) with high geometric validity and biological plausibility. It overcomes the limitations of standard generative models by enforcing physical symmetry constraints and utilizing a novel geometric decoding strategy.
+This repository (`PDexFlow`) is the official implementation of **PDexFlow**, the framework proposed in the paper *Parity-Harmonized Flow Matching for De Novo D-Peptide Design* (PDF included). The Python package is named `pdexflow`; the main model class is `PDexFlowModel` (the former name `UniChiFlowModel` remains available as an alias).
+
+PDexFlow is a flow matching model designed for generating **D-peptides** (and mixed-chirality peptides) with high geometric validity and biological plausibility. It overcomes the limitations of standard generative models by enforcing physical symmetry constraints and utilizing a novel geometric decoding strategy.
 
 ## Key Features
 
@@ -15,8 +17,8 @@ UniChiflow is a state-of-the-art flow matching model designed for generating **D
 ## Environment
 
 ```bash
-conda create -n unichiflow python=3.10
-conda activate unichiflow
+conda create -n pdexflow python=3.10
+conda activate pdexflow
 pip install -r requirements.txt
 ```
 
@@ -31,7 +33,7 @@ pip install -e .
 ## Project Structure
 
 ```
-unidexflow/
+PDexFlow/
 ├── src/                  # Core package
 │   ├── data/             # Data loading, geometry, torsion, parity
 │   ├── models/           # Model architecture (ChiralFormer, ChiLoRA, AFI)
@@ -74,18 +76,18 @@ cp configs/unichiflow_training.yaml configs/config.yaml
 
 ### 1. Training
 
-UniChiflow supports pure L-peptide training with PH-Flow symmetry loss sufficient for generating both L and D peptides.
+PDexFlow supports pure L-peptide training with PH-Flow symmetry loss sufficient for generating both L and D peptides.
 
 **Pure L Training (Recommended):**
 ```bash
-python -W ignore -m src.experiments.train_unichiflow \
+python -W ignore -m src.experiments.train_pdexflow \
     --config-path configs \
     --config-name unichiflow_pure_L
 ```
 
 **Standard Training (with TwinUniverseDataset):**
 ```bash
-python -W ignore -m src.experiments.train_unichiflow \
+python -W ignore -m src.experiments.train_pdexflow \
     --config-path configs \
     --config-name unichiflow_training
 ```
@@ -114,7 +116,7 @@ This creates a separate mirrored dataset for pure L vs pure D training compariso
 Generate D-peptide candidates for a given receptor target. The model outputs `.pdb` files with correct D-amino acid nomenclature (DAL, DGL, etc.).
 
 ```bash
-python -W ignore -m src.scripts.inference_unichiflow \
+python -W ignore scripts/inference_pdexflow.py \
     --config-path configs \
     --config-name unichiflow_inference \
     sample.num_samples=100 \
@@ -130,7 +132,7 @@ python -W ignore -m src.scripts.inference_unichiflow \
 We provide a comprehensive PyRosetta-based evaluation suite that measures geometric validity, biological plausibility, and binding affinity. The evaluation pipeline automatically handles D-peptide flipping to ensure accurate energy calculation in standard forcefields.
 
 ```bash
-python -W ignore -m src.scripts.eval_unichiflow \
+python -W ignore scripts/eval_pdexflow.py \
     --config-path configs \
     --config-name unichiflow_eval \
     sample.ckpt_path=/path/to/checkpoint.pt
@@ -138,7 +140,7 @@ python -W ignore -m src.scripts.eval_unichiflow \
 
 Optional robustness summary from an ablation CSV:
 ```bash
-python -W ignore -m src.scripts.summarize_sensitivity \
+python -W ignore scripts/summarize_sensitivity.py \
     path/to/ablation_runs.csv \
     --metrics chiral_err,rmsd_ca,motif_acc
 ```
@@ -147,7 +149,7 @@ python -W ignore -m src.scripts.summarize_sensitivity \
 *   **AAR (Atom-Atom Recovery)**: Contact recovery rate against reference.
 *   **RMSD**: Geometric deviation of the backbone.
 *   **SCR (Sidechain Recovery)**: Percentage of sidechains with correct χ angles.
-*   **Chiral_Rec / Chiral_pct**: Chiral correctness. **UniChiflow achieves ~100% Chiral Recovery** due to the hard decoder.
+*   **Chiral_Rec / Chiral_pct**: Chiral correctness. **PDexFlow achieves ~100% Chiral Recovery** due to the hard decoder.
 *   **Stb (Stability)**: Rosetta energy-based stability score (calculated in standardized L-space).
 *   **Aff (Affinity)**: Interaction energy (ΔG) with the receptor.
 

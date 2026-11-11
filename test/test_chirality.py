@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import math
 
 # Mocking the necessary parts to test decode_to_heavyatom15
-from src.models.chiralformer import UniChiFlowModel
+from src.models.chiralformer import PDexFlowModel
 from src.data import pep_constants as constants
 from src.data.torsion import full_atom_reconstruction
 
@@ -23,7 +23,7 @@ def test_decoder_chirality():
     chirality = torch.ones((B,), dtype=torch.long)
     peptide_mask = torch.ones((B, L), dtype=torch.long)
     
-    model = UniChiFlowModel() # Init model (weights don't matter for decode)
+    model = PDexFlowModel() # Init model (weights don't matter for decode)
     
     # Decode
     pos15, mask15 = model.decode_to_heavyatom15(

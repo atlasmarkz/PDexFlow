@@ -1,4 +1,4 @@
-"""ESM-based semantic conditioner for UniChiFlow."""
+"""ESM-based semantic conditioner for PDexFlow."""
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 

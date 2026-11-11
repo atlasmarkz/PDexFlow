@@ -3,8 +3,9 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "unichiflow"
+name = "pdexflow"
 version = "0.1.0"
+description = "PDexFlow: parity-harmonized flow matching for de novo D-peptide design"
 
 [tool.ruff]
 line-length = 100

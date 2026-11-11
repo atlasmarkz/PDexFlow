@@ -1,6 +1,6 @@
 import torch
 
-from src.models.chiralformer import UniChiFlowModel
+from src.models.chiralformer import PDexFlowModel
 from src.data.minibatch_ot import minibatch_optimal_transport
 from src.data.pep_constants import BBHeavyAtom
 
@@ -33,7 +33,7 @@ def test_symmetry_and_loss():
     angle_dim = 5
     batch = make_dummy_batch(B=B, L=L, angle_dim=angle_dim)
 
-    model = UniChiFlowModel(
+    model = PDexFlowModel(
         d_model=64,
         n_layers=2,
         n_heads=4,

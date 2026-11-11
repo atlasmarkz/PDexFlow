@@ -1,4 +1,4 @@
-"""Minibatch Riemannian OT utilities for UniChiFlow."""
+"""Minibatch Riemannian OT utilities for PDexFlow."""
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Tuple, Union
 
