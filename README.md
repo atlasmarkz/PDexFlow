@@ -2,7 +2,7 @@
 
 **Escaping the Mirror Trap: Parity-Harmonized Flow Matching on Riemannian Manifolds for Peptide Design** — generate L- and D-peptide binders with symmetry-consistent flow matching and hard geometric constraints.
 
-Code for the paper submitted to the *International Conference on Data Mining (ICDM) 2026*.
+Official code for the paper accepted at the *International Conference on Data Mining (ICDM) 2026*.
 
 <p align="center">
   <img src="assets/architecture.png" alt="PDexFlow architecture" width="900">
