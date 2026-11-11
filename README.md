@@ -3,7 +3,7 @@
 **Parity-Harmonized Flow Matching for De Novo D-Peptide Design** — generate L- and D-peptide binders with symmetry-consistent flow matching and hard geometric constraints.
 
 <p align="center">
-  <img src="assets/architecture.svg" alt="PDexFlow architecture" width="360">
+  <img src="assets/architecture.png" alt="PDexFlow architecture" width="900">
 </p>
 
 ## Installation
