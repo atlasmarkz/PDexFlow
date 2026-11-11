@@ -1,6 +1,6 @@
 """Inference entrypoint for PDexFlow.
 
-Device selection goes through `resolve_inference_device` (components.py), which
+Device selection goes through `resolve_inference_device` (src/training/builders.py), which
 auto-falls-back `cuda -> mps -> cpu` so the same yaml configs work on both a
 CUDA box and a Mac.
 

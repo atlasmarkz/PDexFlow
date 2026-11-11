@@ -1,7 +1,9 @@
 import math
 
 import src.data.pep_constants as constants
-from src.models.geometry import *
+import torch
+
+from src.models.geometry import compose_chain
 
 """
 calc torsion angles between (0,2pi)

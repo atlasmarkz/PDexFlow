@@ -4,13 +4,13 @@ from typing import Dict, Any
 def load_backbone_into_lora(model: nn.Module, backbone_state_dict: Dict[str, Any], verbose: bool = True):
     """
     Loads a backbone state dict (without LoRA layers) into a model with LoRA layers.
-    Automatically maps 'layer.weight' to 'layer.base.weight' for ChiLoRALinear modules.
+    Automatically maps 'layer.weight' to 'layer.base.weight' for Chiral-Bridge LoRA wrappers.
     """
     model_state = model.state_dict()
     new_state_dict = {}
     
     # Get mapping of current model keys
-    # We need to know which keys in the model correspond to ChiLoRALinear base layers
+    # We need to know which keys in the model correspond to wrapped base layers
     
     # Naive approach: iterate over backbone keys and try to match them to model keys
     # If key exists in model, use it.

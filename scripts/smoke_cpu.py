@@ -235,7 +235,7 @@ def main():
     device = "cpu"
     torch.manual_seed(args.seed)
 
-    print(f"== PDexFlow CPU smoke test ==")
+    print("== PDexFlow CPU smoke test ==")
     print(f"  device: {device}  torch: {torch.__version__}")
     print(f"  batch: B={args.batch}  L={args.length}  train_steps: {args.steps}")
 

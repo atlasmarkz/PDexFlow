@@ -35,6 +35,6 @@ licence, not a pip dependency); Rosetta based numbers can be supplied through ex
 * The mirrored dataset used `(x, y, z) → (-x, -y, z)`, a rotation by π (no change of handedness) instead of an inversion.
 * `so3.log_map` returned twice the rotation angle, which doubled every rotation velocity and geodesic distance.
 * The torsion `psi` of the data pipeline and of the rigid-group reconstruction differed by π (backbone O was misplaced by ~2.1 Å).
-* The Chiral-Bridge gate was never applied when AFI was enabled, and the legacy trunk's fast path bypassed LoRA in eval mode.
+* The Chiral-Bridge gate was not applied on one of the trunk code paths (so LoRA stayed off), and the legacy trunk's fast path bypassed LoRA in eval mode. Both legacy paths have since been removed.
 * `chirality_error` scored receptor and glycine residues and broadcast the chirality vector incorrectly for batch size > 1.
 * Inference/evaluation built the model differently from training; all entry points now share `build_model`.

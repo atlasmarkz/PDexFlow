@@ -2,7 +2,7 @@
 
 Step 2 of the Trainer refactor roadmap: extract the setup-phase construction
 (dataset, dataloader, model, optimizer, checkpoint load) so the two trainers
-(`train_pdexflow.py`, `train_lora_real_d.py`) call into identical factories.
+(`src/cli/train.py`, `src/cli/finetune.py`) call into identical factories.
 
 No behavior change. Each function reproduces the exact construction the inline
 code used to perform — pre-existing inconsistencies between the two scripts
@@ -130,7 +130,7 @@ def build_optimizer(model: PDexFlowModel, cfg: DictConfig, *, trainable_only: bo
 def load_initial_weights(model: PDexFlowModel, cfg: DictConfig, device: str) -> PDexFlowModel:
     """Load a pre-trained backbone into the model via the LoRA-aware loader.
 
-    Mirrors `train_lora_real_d.py`'s original behavior. Returns the (possibly
+    Used by the fine-tuning entry point (`src/cli/finetune.py`). Returns the (possibly
     rewrapped) model; `load_backbone_into_lora` may return a new object so we
     propagate its return value.
     """

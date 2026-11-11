@@ -492,12 +492,12 @@ def analyze_pepmerge_dataset(structure_dir: str, max_samples: int = None, sample
         f.write("PepMerge 数据集 - 肽段分布分析报告\n")
         f.write("=" * 60 + "\n\n")
 
-        f.write(f"【数据概览】\n")
+        f.write("【数据概览】\n")
         f.write(f"  总样本目录数: {len(sample_dirs)}\n")
         f.write(f"  有效样本数: {len(pep_lengths_arr)}\n")
         f.write(f"  跳过样本数: {len(skipped_samples)}\n\n")
 
-        f.write(f"【肽段长度分布】\n")
+        f.write("【肽段长度分布】\n")
         f.write(f"  样本数: {len(pep_lengths_arr)}\n")
         f.write(f"  均值: {pep_lengths_arr.mean():.1f}\n")
         f.write(f"  标准差: {pep_lengths_arr.std():.1f}\n")
@@ -508,7 +508,7 @@ def analyze_pepmerge_dataset(structure_dir: str, max_samples: int = None, sample
         f.write(f"  P75: {np.percentile(pep_lengths_arr, 75):.0f}\n")
         f.write(f"  P90: {np.percentile(pep_lengths_arr, 90):.0f}\n\n")
 
-        f.write(f"【氨基酸组成】(肽段中)\n")
+        f.write("【氨基酸组成】(肽段中)\n")
         total_aa = sum(aa_counts.values())
         sorted_aa = sorted(aa_counts.items(), key=lambda x: -x[1])
         for aa_idx, count in sorted_aa:
@@ -519,19 +519,19 @@ def analyze_pepmerge_dataset(structure_dir: str, max_samples: int = None, sample
         f.write("\n")
 
         if len(ca_distances_arr) > 0:
-            f.write(f"【CA 原子间距分布】(相邻残基, 肽段内)\n")
+            f.write("【CA 原子间距分布】(相邻残基, 肽段内)\n")
             f.write(f"  样本数: {len(ca_distances_arr)}\n")
             f.write(f"  均值: {ca_distances_arr.mean():.3f} A\n")
             f.write(f"  P50: {np.percentile(ca_distances_arr, 50):.3f} A\n\n")
 
         if len(phis_arr) > 0:
-            f.write(f"【二面角分布】(肽段)\n")
+            f.write("【二面角分布】(肽段)\n")
             f.write(f"  Phi (n={len(phis_arr)}): mean={np.degrees(phis_arr).mean():.1f}deg, std={np.degrees(phis_arr).std():.1f}deg\n")
             f.write(f"  Psi (n={len(psis_arr)}): mean={np.degrees(psis_arr).mean():.1f}deg, std={np.degrees(psis_arr).std():.1f}deg\n")
             f.write(f"  Omega (n={len(omegas_arr)}): mean={np.degrees(omegas_arr).mean():.1f}deg, std={np.degrees(omegas_arr).std():.1f}deg\n\n")
 
         if chirality_counts:
-            f.write(f"【手性检测】\n")
+            f.write("【手性检测】\n")
             total_chiral = sum(chirality_counts.values())
             for chirality, count in sorted(chirality_counts.items()):
                 label = {1: 'L-peptide', -1: 'D-peptide', 0: 'Unknown'}.get(chirality, f'Unknown({chirality})')
@@ -540,13 +540,13 @@ def analyze_pepmerge_dataset(structure_dir: str, max_samples: int = None, sample
             f.write("\n")
 
         if len(all_ca) > 0:
-            f.write(f"\n【CA 坐标分布】\n")
+            f.write("\n【CA 坐标分布】\n")
             center = all_ca.mean(axis=0)
             rms = np.sqrt(((all_ca - center)**2).sum(axis=1).mean())
             f.write(f"  中心点: ({center[0]:.1f}, {center[1]:.1f}, {center[2]:.1f})\n")
             f.write(f"  RMS 半径: {rms:.1f} A\n\n")
 
-        f.write(f"【输出文件】\n")
+        f.write("【输出文件】\n")
         f.write(f"  分布图: {peptide_output_dir}/\n")
 
     stats_file_rec = os.path.join(receptor_output_dir, "analysis_statistics.txt")
@@ -555,7 +555,7 @@ def analyze_pepmerge_dataset(structure_dir: str, max_samples: int = None, sample
         f.write("PepMerge 数据集 - 受体分布分析报告\n")
         f.write("=" * 60 + "\n\n")
 
-        f.write(f"【受体长度分布】\n")
+        f.write("【受体长度分布】\n")
         f.write(f"  样本数: {len(rec_lengths_arr)}\n")
         f.write(f"  均值: {rec_lengths_arr.mean():.1f}\n")
         f.write(f"  标准差: {rec_lengths_arr.std():.1f}\n")
@@ -563,7 +563,7 @@ def analyze_pepmerge_dataset(structure_dir: str, max_samples: int = None, sample
         f.write(f"  P50: {np.percentile(rec_lengths_arr, 50):.0f}\n")
         f.write(f"  P90: {np.percentile(rec_lengths_arr, 90):.0f}\n\n")
 
-        f.write(f"【氨基酸组成】(受体中)\n")
+        f.write("【氨基酸组成】(受体中)\n")
         total_rec_aa = sum(rec_aa_counts.values())
         sorted_rec_aa = sorted(rec_aa_counts.items(), key=lambda x: -x[1])
         for aa_idx, count in sorted_rec_aa:
@@ -574,12 +574,12 @@ def analyze_pepmerge_dataset(structure_dir: str, max_samples: int = None, sample
         f.write("\n")
 
         if len(rec_phis_arr) > 0:
-            f.write(f"【二面角分布】(受体)\n")
+            f.write("【二面角分布】(受体)\n")
             f.write(f"  Phi (n={len(rec_phis_arr)}): mean={np.degrees(rec_phis_arr).mean():.1f}deg, std={np.degrees(rec_phis_arr).std():.1f}deg\n")
             f.write(f"  Psi (n={len(rec_psis_arr)}): mean={np.degrees(rec_psis_arr).mean():.1f}deg, std={np.degrees(rec_psis_arr).std():.1f}deg\n")
             f.write(f"  Omega (n={len(rec_omegas_arr)}): mean={np.degrees(rec_omegas_arr).mean():.1f}deg, std={np.degrees(rec_omegas_arr).std():.1f}deg\n\n")
 
-        f.write(f"【输出文件】\n")
+        f.write("【输出文件】\n")
         f.write(f"  分布图: {receptor_output_dir}/\n")
 
     np.savez(os.path.join(base_output_dir, "dataset_distribution_data.npz"),

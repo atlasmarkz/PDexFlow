@@ -99,8 +99,8 @@ def main():
     print(f"找到 {len(sample_dirs)} 个样本目录")
     print(f"输入: {input_dir}")
     print(f"输出: {output_dir}")
-    print(f"镜像方式: parity镜像 (空间反演) (x, y, z) -> (-x, -y, -z)")
-    print(f"  这是坐标变换模拟 D-肽手性，非真正的 D-氨基酸")
+    print("镜像方式: parity镜像 (空间反演) (x, y, z) -> (-x, -y, -z)")
+    print("  这是坐标变换模拟 D-肽手性，非真正的 D-氨基酸")
 
     # 创建输出根目录
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -114,10 +114,10 @@ def main():
             print(f"处理失败 {sample_dir.name}: {e}")
 
     print(f"\n完成! 镜像数据已保存到: {output_dir}")
-    print(f"你可以用以下命令对比训练:")
-    print(f"  # 纯 L 训练:")
+    print("你可以用以下命令对比训练:")
+    print("  # 纯 L 训练:")
     print(f"  pdexflow-train data.structure_dir={input_dir}")
-    print(f"  # 纯 D 训练 (parity镜像):")
+    print("  # 纯 D 训练 (parity镜像):")
     print(f"  pdexflow-train data.structure_dir={output_dir}")
 
 
