@@ -27,7 +27,8 @@ Status of each item was checked against the code; "tested" means covered by `tes
 ## Evaluation metrics
 `scripts/eval_pdexflow.py` reports **AAR** (Amino Acid Recovery), CA-RMSD, chirality error (generated residues that own a CB
 atom), novelty, diversity (clustering of CA descriptors) and latency / memory. The paper's **Clash, SSR, BSR, scRMSD,
-Stb. and Aff.** are *not* computed by this repository: Rosetta based numbers can be supplied through external CSVs
+Stb. and Aff.** are *not* computed by this repository. Reproducing them fully requires a separately installed PyRosetta (separate
+licence, not a pip dependency); Rosetta based numbers can be supplied through external CSVs
 (`eval.orthogonal`), the others require external tools (DSSP, a structure predictor, Rosetta) and are not implemented.
 
 ## Bugs fixed while aligning with the paper

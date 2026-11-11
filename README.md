@@ -16,6 +16,12 @@ conda activate pdexflow
 pip install -e ".[dev]"          # add ".[esm]" for the optional frozen ESM-2 receptor features
 ```
 
+> **Full reproduction of the paper's evaluation requires PyRosetta.** The Rosetta based metrics (Aff., Stb.) need
+> [PyRosetta](https://www.pyrosetta.org/) installed separately (it is not a pip dependency of this package; academic use is
+> free, commercial use needs a licence). This repository does not run Rosetta itself yet: `scripts/eval_pdexflow.py`
+> reports AAR, CA-RMSD, chirality error, novelty and diversity, and reads externally computed Rosetta scores from a CSV
+> (`eval.orthogonal`). Clash, SSR, BSR and scRMSD are not implemented (see [docs/paper_mapping.md](docs/paper_mapping.md)).
+
 ## Usage
 
 All entry points are [Hydra](https://hydra.cc) apps with default configs in `configs/`; any value can be overridden on the
