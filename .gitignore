@@ -65,3 +65,5 @@ data/
 .cache/
 .mmseqs2_cache/
 cache/
+# Unpublished manuscript (keep local only)
+docs/*.pdf
