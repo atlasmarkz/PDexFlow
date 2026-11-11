@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader, Dataset
 from src.checkpoint import load_backbone_into_lora
 from src.data.pep_dataloader import DualPepDataset, PaddingCollate, TwinUniversePepDataset
 from src.data.real_d_pep_dataset import RealDPepDataset
-from src.models.chiralformer import PDexFlowModel
+from src.models.model import PDexFlowModel
 
 
 DatasetKind = Literal["pepmerge", "real_d"]

@@ -28,7 +28,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data.pep_constants import BBHeavyAtom
-from src.models.chiralformer import PDexFlowModel
+from src.models.model import PDexFlowModel
 
 
 # Residue index → 3-letter name, just for PDB dump (order matches the ordering

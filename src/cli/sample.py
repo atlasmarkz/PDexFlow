@@ -18,10 +18,8 @@ path — override with `sample.device=cpu` on the hydra CLI. MPS only pays off
 when you batch many samples (sweeping chirality / seeds / candidates).
 """
 import os
-import sys
 from copy import deepcopy
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import hydra
 import torch
@@ -33,11 +31,11 @@ from src.data.real_d_pep_dataset import RealDPepDataset
 from src.data.pepmerge_dataset import PepMergeDataset
 from src.data import utils as du
 from src.data.writers import save_pdb
-from src.experiments.components import load_model_for_inference, resolve_inference_device
+from src.training.builders import load_model_for_inference, resolve_inference_device
  
 
 
-config_path = os.path.join(os.path.dirname(__file__), "..", "configs")
+config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "configs"))
 config_name = "pdexflow_inference.yaml"
 
 

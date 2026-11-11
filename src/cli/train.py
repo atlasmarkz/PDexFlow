@@ -16,14 +16,14 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from src.data import utils as du
-from src.experiments.components import (
+from src.training.builders import (
     build_dataloader,
     build_dataset,
     build_model,
     build_optimizer,
     inf_iterator,
 )
-from src.experiments.train_step import StepConfig, do_train_step
+from src.training.step import StepConfig, do_train_step
 
 
 _RAD2DEG = 180.0 / math.pi

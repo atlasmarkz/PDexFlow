@@ -1,5 +1,4 @@
 import os
-import sys
 import time
 import hydra
 import torch
@@ -8,10 +7,9 @@ from torch.nn.utils import clip_grad_norm_
 from tqdm import tqdm
 
 # Add parent directory to path if package is not installed
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from src.data import utils as du
-from src.experiments.components import (
+from src.training.builders import (
     build_dataloader,
     build_dataset,
     build_model,

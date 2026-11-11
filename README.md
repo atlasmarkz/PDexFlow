@@ -18,7 +18,7 @@ pip install -e ".[dev]"          # add ".[esm]" for the optional frozen ESM-2 re
 
 > **Full reproduction of the paper's evaluation requires PyRosetta.** The Rosetta based metrics (Aff., Stb.) need
 > [PyRosetta](https://www.pyrosetta.org/) installed separately (it is not a pip dependency of this package; academic use is
-> free, commercial use needs a licence). This repository does not run Rosetta itself yet: `scripts/eval_pdexflow.py`
+> free, commercial use needs a licence). This repository does not run Rosetta itself yet: `pdexflow-eval`
 > reports AAR, CA-RMSD, chirality error, novelty and diversity, and reads externally computed Rosetta scores from a CSV
 > (`eval.orthogonal`). Clash, SSR, BSR and scRMSD are not implemented (see [docs/paper_mapping.md](docs/paper_mapping.md)).
 
@@ -31,19 +31,19 @@ command line. Data is expected as one folder per complex containing `peptide.pdb
 **Train** the backbone (mirror-symmetric strategy, Symmetry Consistency Loss, Mini-ROT)
 
 ```bash
-python -W ignore -m src.experiments.train_pdexflow data.structure_dir=data/pepmerge
+pdexflow-train data.structure_dir=data/pepmerge
 ```
 
 **Fine-tune** Chiral-Bridge LoRA on real D-peptides (backbone frozen)
 
 ```bash
-python -W ignore -m src.experiments.train_lora_real_d data.structure_dir=data/real_d sample.ckpt_path=/path/to/backbone.pt
+pdexflow-finetune data.structure_dir=data/real_d sample.ckpt_path=/path/to/backbone.pt
 ```
 
 **Generate** (`sample.chirality_token=0` → L-peptide, `1` → D-peptide)
 
 ```bash
-python -W ignore scripts/inference_pdexflow.py \
+pdexflow-sample \
     sample.ckpt_path=/path/to/backbone.pt sample.chirality_token=1 sample.num_samples=100
 # with LoRA: add  chi_lora=finetune sample.lora_ckpt_path=/path/to/lora.pt
 ```
@@ -51,7 +51,7 @@ python -W ignore scripts/inference_pdexflow.py \
 **Evaluate** (AAR, CA-RMSD, chirality error, novelty, diversity; Rosetta scores are read from an optional external CSV)
 
 ```bash
-python -W ignore scripts/eval_pdexflow.py sample.ckpt_path=/path/to/backbone.pt eval.dataset_x_mirror=true
+pdexflow-eval sample.ckpt_path=/path/to/backbone.pt eval.dataset_x_mirror=true
 ```
 
 **Test** (unit tests plus an end-to-end run of the four entry points on synthetic data, CPU, ~15 s)

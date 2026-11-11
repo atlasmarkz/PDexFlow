@@ -1,8 +1,6 @@
 import contextlib
 import math
-from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import Dict, Iterable, Optional, Set, Tuple
+from typing import Dict, Optional, Set, Tuple
 
 import torch
 import torch.nn as nn
@@ -16,109 +14,11 @@ from src.data import utils as du
 from src.data.pep_constants import BBHeavyAtom
 from src.data.torsion import full_atom_reconstruction, get_heavyatom_mask
 from src.models.chiral_gated_lora import ChiralBridgeLoRA
+from src.models.config import ChiLoRAConfig, FlowConfig
 from src.models.geometric_transformer import GeometricTransformer
 from src.models.geometry import construct_3d_basis
+from src.models.rotation import rot6d_to_rotmat, rotmat_to_6d
 from src.models.semantic_conditioner import ESM2Conditioner, ESM2Config
-
-
-def rotmat_to_6d(R: torch.Tensor) -> torch.Tensor:
-    # (...,3,3) -> (...,6) : first two columns
-    return torch.cat([R[..., :, 0], R[..., :, 1]], dim=-1)
-
-
-def rot6d_to_rotmat(x: torch.Tensor) -> torch.Tensor:
-    # (...,6) -> (...,3,3) via Gram-Schmidt
-    a1 = x[..., 0:3]
-    a2 = x[..., 3:6]
-    # eps=1e-6 (not the default 1e-12): under fp16/AMP the head can emit near-zero
-    # 6D vectors early in training, which F.normalize then turns into NaN when the
-    # default eps underflows. Matches the Gram–Schmidt guard used in PFF.
-    b1 = F.normalize(a1, dim=-1, eps=1e-6)
-    b2 = F.normalize(a2 - (b1 * a2).sum(dim=-1, keepdim=True) * b1, dim=-1, eps=1e-6)
-    b3 = torch.cross(b1, b2, dim=-1)
-    return torch.stack([b1, b2, b3], dim=-1)
-
-
-@dataclass
-class FlowConfig:
-    # sigma_trans=0.1 matches the scale of data-side trans_1 after coord_scale=0.1
-    # (typical CA coordinates within a peptide are ~tens of Å → single-digit units
-    # after the scale). A unit-std prior swamps the signal at small t and pushes
-    # OT cost to pick up a spurious batch translation. PFF/dflow use the same 0.1
-    # scale after their coord normalization.
-    sigma_trans: float = 0.1
-    cfm_weight: float = 1.0
-    sym_weight: float = 1.0
-    seq_weight: float = 1.0
-    use_ot: bool = True
-    # 'huber' (default, robust) or 'l2' (squared norm, paper Eq. 4/5) for L_flow and L_sym
-    loss_type: str = "huber"
-    # per-component weights for velocity flow-matching (trans, rot, ang)
-    cfm_w_trans: float = 1.0
-    cfm_w_rot: float = 1.0
-    cfm_w_ang: float = 1.0
-
-
-@dataclass
-class ChiLoRAConfig:
-    enabled: bool = False
-    rank: int = 8
-    alpha: float = 16.0
-    dropout: float = 0.0
-    # "attn": q/k/v/out projections of every attention (paper Sec. IV-B); "attn_out": output projection only;
-    # "ffn": both feed-forward projections.
-    targets: Tuple[str, ...] = ("attn", "ffn")
-    freeze_backbone: bool = False
-
-    @classmethod
-    def from_cfg(cls, cfg: Optional[Dict]) -> "ChiLoRAConfig":
-        if cfg is None:
-            return cls()
-        if isinstance(cfg, ChiLoRAConfig):
-            return cfg
-
-        # Explicit handling: accept dict, Mapping, or OmegaConf DictConfig. Earlier
-        # versions swallowed any TypeError/AttributeError and silently returned
-        # disabled defaults — so a malformed config would look like "LoRA off"
-        # instead of raising, which is exactly the failure mode we want to kill.
-        if isinstance(cfg, Mapping):
-            data = dict(cfg)
-        else:
-            try:
-                from omegaconf import DictConfig, OmegaConf  # type: ignore
-            except ImportError:
-                DictConfig = None  # type: ignore
-                OmegaConf = None  # type: ignore
-            if DictConfig is not None and isinstance(cfg, DictConfig):
-                data = OmegaConf.to_container(cfg, resolve=True)  # type: ignore[arg-type]
-                if not isinstance(data, dict):
-                    raise TypeError(
-                        f"ChiLoRAConfig.from_cfg: DictConfig resolved to {type(data)}, expected dict"
-                    )
-            else:
-                raise TypeError(
-                    f"ChiLoRAConfig.from_cfg: unsupported cfg type {type(cfg)}. "
-                    f"Expected dict, Mapping, DictConfig, or ChiLoRAConfig."
-                )
-
-        targets = data.get("targets", cls.targets)
-        if isinstance(targets, str):
-            targets = (targets,)
-        elif isinstance(targets, Iterable):
-            targets = tuple(str(t) for t in targets)
-        else:
-            raise TypeError(
-                f"ChiLoRAConfig.targets must be a string or iterable of strings, got {type(targets)}"
-            )
-
-        return cls(
-            enabled=bool(data.get("enable", data.get("enabled", False))),
-            rank=int(data.get("rank", cls.rank)),
-            alpha=float(data.get("alpha", cls.alpha)),
-            dropout=float(data.get("dropout", cls.dropout)),
-            targets=targets,
-            freeze_backbone=bool(data.get("freeze_backbone", cls.freeze_backbone)),
-        )
 
 
 class PDexFlowModel(nn.Module):

@@ -6,7 +6,7 @@ import torch
 from src.analysis.utils import chirality_sign
 from src.data import so3
 from src.data.pep_constants import AA, BBHeavyAtom
-from src.models.chiralformer import PDexFlowModel
+from src.models.model import PDexFlowModel
 
 
 def _batch(B=2, L=8, n_pep=5, seed=0):

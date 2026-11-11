@@ -116,9 +116,9 @@ def main():
     print(f"\n完成! 镜像数据已保存到: {output_dir}")
     print(f"你可以用以下命令对比训练:")
     print(f"  # 纯 L 训练:")
-    print(f"  python -m src.experiments.train_pdexflow data.structure_dir={input_dir}")
+    print(f"  pdexflow-train data.structure_dir={input_dir}")
     print(f"  # 纯 D 训练 (parity镜像):")
-    print(f"  python -m src.experiments.train_pdexflow data.structure_dir={output_dir}")
+    print(f"  pdexflow-train data.structure_dir={output_dir}")
 
 
 if __name__ == '__main__':

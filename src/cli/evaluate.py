@@ -1,13 +1,11 @@
 import csv
 import json
 import os
-import sys
 import time
 from collections import defaultdict
 from copy import deepcopy
 from typing import Dict, Iterable, List, Sequence, Tuple
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import hydra
 import numpy as np
@@ -20,9 +18,9 @@ from src.data.pep_constants import BBHeavyAtom
 from src.data.pep_dataloader import PaddingCollate, PepDataset
 from src.data.writers import save_pdb
 from src.analysis.metrics import aar_accuracy, chirality_error, kabsch_rmsd
-from src.experiments.components import load_model_for_inference, resolve_inference_device
+from src.training.builders import load_model_for_inference, resolve_inference_device
 
-config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "configs"))  # independent of the cwd
+config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "configs"))  # independent of the cwd
 config_name = "pdexflow_eval.yaml"
 
 

@@ -24,7 +24,7 @@ Status of each item was checked against the code; "tested" means covered by `tes
 * Auxiliary sequence masking (peptide tokens are masked with probability `1-t`) is an implementation detail of the sequence head.
 
 ## Evaluation metrics
-`scripts/eval_pdexflow.py` reports **AAR** (Amino Acid Recovery), CA-RMSD, chirality error (generated residues that own a CB
+`src/cli/evaluate.py` reports **AAR** (Amino Acid Recovery), CA-RMSD, chirality error (generated residues that own a CB
 atom), novelty, diversity (clustering of CA descriptors) and latency / memory. The paper's **Clash, SSR, BSR, scRMSD,
 Stb. and Aff.** are *not* computed by this repository. Reproducing them fully requires a separately installed PyRosetta (separate
 licence, not a pip dependency); Rosetta based numbers can be supplied through external CSVs

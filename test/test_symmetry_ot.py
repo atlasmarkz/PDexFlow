@@ -1,6 +1,6 @@
 import torch
 
-from src.models.chiralformer import PDexFlowModel
+from src.models.model import PDexFlowModel
 from src.data.minibatch_ot import solve_ot
 
 

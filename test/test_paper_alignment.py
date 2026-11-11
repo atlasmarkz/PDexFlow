@@ -10,7 +10,7 @@ import torch
 from src import flow as ph_flow
 from src.data import minibatch_ot, so3, torus
 from src.data.parity import apply_parity_state, parity_rotvec, parity_torsion_velocity
-from src.models.chiralformer import PDexFlowModel
+from src.models.model import PDexFlowModel
 
 _spec = importlib.util.spec_from_file_location("smoke_cpu", os.path.join(os.path.dirname(__file__), "..", "scripts", "smoke_cpu.py"))
 _smoke = importlib.util.module_from_spec(_spec)

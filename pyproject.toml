@@ -22,6 +22,12 @@ dependencies = [
     "tensorboard",
 ]
 
+[project.scripts]
+pdexflow-train = "src.cli.train:main"
+pdexflow-finetune = "src.cli.finetune:main"
+pdexflow-sample = "src.cli.sample:main"
+pdexflow-eval = "src.cli.evaluate:main"
+
 [project.optional-dependencies]
 esm = ["fair-esm"]
 dev = ["pytest", "ruff", "mypy"]

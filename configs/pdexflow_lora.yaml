@@ -1,5 +1,5 @@
 # Chiral-Bridge LoRA fine-tuning on a real D-peptide set (paper Sec. IV-B): the pre-trained backbone is frozen and only the
-# LoRA matrices and the chiral gate gamma are trained. Run with  python -m src.experiments.train_lora_real_d.
+# LoRA matrices and the chiral gate gamma are trained. Run with  pdexflow-finetune  (python -m src.cli.finetune).
 # Needs sample.ckpt_path=<backbone checkpoint trained with pdexflow_training.yaml> (same model.* sizes).
 defaults:
   - model: default
