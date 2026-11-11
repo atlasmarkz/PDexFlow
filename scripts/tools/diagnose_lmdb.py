@@ -3,7 +3,6 @@ import os
 import pickle
 import lmdb
 import torch
-from glob import glob
 
 def diagnose_lmdb(cache_path):
     """Check what's inside the LMDB."""
@@ -78,7 +77,6 @@ def diagnose_lmdb(cache_path):
 
 
 if __name__ == "__main__":
-    import sys
     caches = [
         ".cache/pep_cache",
         ".cache/pep_cache_pure_L",

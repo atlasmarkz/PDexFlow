@@ -22,7 +22,6 @@ train:
     weight_decay: 0.0
 
 model:
-  trunk_type: geometric              # paper Sec. IV-C: RBF-biased self-attention + receptor cross-attention
   n_rbf: 16
   d_model: 256
   n_layers: 6
@@ -36,7 +35,6 @@ model:
 flow:
   sigma_trans: 0.1
   use_ot: true                       # Mini-ROT (paper Eq. 13)
-  ot_mode: minibatch                 # minibatch | residue (legacy)
   loss_type: huber                   # huber (robust, default) | l2 (squared norm of paper Eq. 4/5)
   cfm_weight: 1.0
   sym_weight: 1.0                    # lambda_sym of the symmetry consistency loss
@@ -58,5 +56,3 @@ chi_lora:                            # Chiral-Bridge LoRA; usually enabled for f
 esm:                                 # frozen ESM-2 receptor features (needs `pip install fair-esm`)
   enable: false
 
-afi:                                 # Axial Feature Injection: not part of the paper, off by default
-  enable: false

@@ -33,7 +33,6 @@ from src.data.real_d_pep_dataset import RealDPepDataset
 from src.data.pepmerge_dataset import PepMergeDataset
 from src.data import utils as du
 from src.data.writers import save_pdb
-from src.data.pep_constants import BBHeavyAtom
 from src.checkpoint import load_backbone_into_lora
 from src.experiments.components import build_model, resolve_inference_device
  

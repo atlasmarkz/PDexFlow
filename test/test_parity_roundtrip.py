@@ -11,7 +11,7 @@ import torch
 from src.data import so3
 from src.data.parity import parity_rotations, parity_torsions
 from src.data.pep_constants import BBHeavyAtom
-from src.data.torsion import full_atom_reconstruction, get_heavyatom_mask, get_torsion_angle
+from src.data.torsion import full_atom_reconstruction, get_torsion_angle
 from src.models.geometry import construct_3d_basis
 from src.models.hard_geometric_decoder import HardGeometricDecoder
 

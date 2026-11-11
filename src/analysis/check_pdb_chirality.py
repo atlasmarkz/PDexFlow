@@ -1,7 +1,6 @@
 import argparse
 from typing import Optional
 
-import torch
 
 from src.analysis.utils import chirality_sign
 from src.data.parsers import parse_pdb

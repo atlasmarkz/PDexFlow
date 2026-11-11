@@ -5,7 +5,7 @@ import sys
 import time
 from collections import defaultdict
 from copy import deepcopy
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Sequence, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

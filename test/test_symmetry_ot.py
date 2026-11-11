@@ -1,8 +1,7 @@
 import torch
 
 from src.models.chiralformer import PDexFlowModel
-from src.data.minibatch_ot import minibatch_optimal_transport
-from src.data.pep_constants import BBHeavyAtom
+from src.data.minibatch_ot import solve_ot
 
 
 def make_dummy_batch(B: int = 2, L: int = 8, angle_dim: int = 5):
@@ -56,27 +55,21 @@ def test_symmetry_and_loss():
     sym = float(out["sym_loss"])
     seq = float(out["seq_loss"])
 
-    print("Loss components: loss=%.4f cfm=%.4f sym=%.4f seq=%.4f" % (loss, cfm, sym, seq))
     assert torch.isfinite(torch.tensor([loss, cfm, sym, seq])).all(), "Non-finite loss components"
 
     # Ensure symmetry loss is non-negative and cfm is computed
     assert sym >= 0 and cfm >= 0, "Loss terms should be non-negative"
 
 
-def test_minibatch_ot():
+def test_solve_ot_returns_optimal_assignment():
+    import itertools
+
     torch.manual_seed(0)
-    z0 = torch.randn(1, 4, 3)
-    z1 = torch.randn(1, 4, 3)
-    z0_perm, perm = minibatch_optimal_transport(z0, z1)
-    print("OT perm:", perm)
-    assert perm.shape == (1, 4)
-    # aligned points should correspond to perm indices
-    idx = torch.arange(4)[None, :]
-    gathered = z0[0, perm[0]]
-    assert torch.allclose(gathered, z0_perm[0])
-
-
-if __name__ == "__main__":
-    test_symmetry_and_loss()
-    test_minibatch_ot()
-    print("Sanity checks passed.")
+    cost = torch.rand(3, 5, 5)
+    perm = solve_ot(cost)
+    assert perm.shape == (3, 5)
+    for b in range(3):
+        assert sorted(perm[b].tolist()) == list(range(5)), "not a permutation"
+        got = cost[b, torch.arange(5), perm[b]].sum()
+        best = min(cost[b, torch.arange(5), torch.tensor(p)].sum() for p in itertools.permutations(range(5)))
+        assert torch.isclose(got, best), "assignment is not optimal"

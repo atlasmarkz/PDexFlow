@@ -39,92 +39,6 @@ def rot6d_to_rotmat(x: torch.Tensor) -> torch.Tensor:
     return torch.stack([b1, b2, b3], dim=-1)
 
 
-def compute_axial_features(trans: torch.Tensor, rot6d: torch.Tensor) -> torch.Tensor:
-    """Compute axial (pseudo)vector features from polar vectors.
-
-    Following PepMirror (Yang et al., 2026), we construct three types of axial
-    features from the polar vector inputs (translations and rotation columns):
-
-    1. Cross product: u x v — invariant under parity (P(u)xP(v) = (-u)x(-v) = uxv)
-    2. Commutator: (u.v)(u x v) — captures higher-frequency chirality information
-    3. Triple product projection: ((w.(u x v)) / ||u x v||) * (u x v) — scalar
-       triple product modulated axial direction
-
-    These axial features break the E(3) equivariance that causes chirality blindness
-    in standard scalarization-based models, making the network SE(3)-sensitive
-    (able to distinguish L from D enantiomers).
-
-    Args:
-        trans: (B, L, 3) translation vectors (CA positions).
-        rot6d: (B, L, 6) 6D rotation representation (first two columns of R).
-
-    Returns:
-        (B, L, 9) concatenated axial features [cross, commutator, triple_proj].
-    """
-    u = trans  # (B, L, 3)
-    v = rot6d[..., 0:3]  # first column of rotation matrix
-    w = rot6d[..., 3:6]  # second column of rotation matrix
-
-    # Axial feature 1: cross product (parity-invariant)
-    cross = torch.cross(u, v, dim=-1)  # (B, L, 3)
-
-    # Axial feature 2: commutator (u.v)(u x v)
-    dot_uv = (u * v).sum(dim=-1, keepdim=True)  # (B, L, 1)
-    commutator = dot_uv * cross  # (B, L, 3)
-
-    # Axial feature 3: triple product projection
-    triple_scalar = (w * cross).sum(dim=-1, keepdim=True)  # (B, L, 1)
-    cross_norm = torch.norm(cross, dim=-1, keepdim=True).clamp(min=1e-8)
-    triple_proj = (triple_scalar / cross_norm) * (cross / cross_norm)  # (B, L, 3)
-
-    return torch.cat([cross, commutator, triple_proj], dim=-1)  # (B, L, 9)
-
-
-class AFIModule(nn.Module):
-    """Axial Feature Injection (AFI) module.
-
-    Injects axial vector features into the polar vector feature stream via
-    channel-wise linear mixing, as proposed in PepMirror:
-
-        v_tilde = A^T v_polar + B^T v_axial
-
-    where A, B are learnable mixing coefficients. This makes the model
-    chirality-aware (SE(3)-sensitive instead of E(3)-equivariant), enabling
-    zero-shot cross-chirality generalization from L-peptide training data
-    to D-peptide generation.
-
-    The module is inserted before every FFN layer in the transformer,
-    modifying the hidden state to include chirality-sensitive features.
-    """
-
-    def __init__(self, d_model: int, axial_dim: int = 9):
-        super().__init__()
-        self.d_model = d_model
-        self.axial_dim = axial_dim
-        # Learnable mixing: project axial features to d_model, then mix
-        self.axial_proj = nn.Linear(axial_dim, d_model, bias=False)
-        # Initialize with small weights so AFI starts near identity (polar-only)
-        nn.init.zeros_(self.axial_proj.weight)
-        # Gate that controls AFI strength (starts at 0, learns to open)
-        self.gate_logit = nn.Parameter(torch.tensor(-2.0))
-
-    def forward(self, h: torch.Tensor, trans: torch.Tensor, rot6d: torch.Tensor) -> torch.Tensor:
-        """Inject axial features into the hidden state.
-
-        Args:
-            h: (B, L, d_model) transformer hidden state.
-            trans: (B, L, 3) translation vectors.
-            rot6d: (B, L, 6) 6D rotation representation.
-
-        Returns:
-            (B, L, d_model) hidden state with axial feature injection.
-        """
-        axial = compute_axial_features(trans, rot6d)  # (B, L, 9)
-        axial_proj = self.axial_proj(axial)  # (B, L, d_model)
-        gate = torch.sigmoid(self.gate_logit)
-        return h + gate * axial_proj
-
-
 @dataclass
 class FlowConfig:
     # sigma_trans=0.1 matches the scale of data-side trans_1 after coord_scale=0.1
@@ -137,24 +51,12 @@ class FlowConfig:
     sym_weight: float = 1.0
     seq_weight: float = 1.0
     use_ot: bool = True
-    # 'minibatch': Mini-ROT of paper Eq. 13 (assignment between the B priors and B data samples of a minibatch)
-    # 'residue':   legacy within-peptide residue-level assignment
-    ot_mode: str = "minibatch"
     # 'huber' (default, robust) or 'l2' (squared norm, paper Eq. 4/5) for L_flow and L_sym
     loss_type: str = "huber"
     # per-component weights for velocity flow-matching (trans, rot, ang)
     cfm_w_trans: float = 1.0
     cfm_w_rot: float = 1.0
     cfm_w_ang: float = 1.0
-    # Automatic loss weighting
-    auto_loss_weighting: bool = False
-
-
-@dataclass
-class AFIConfig:
-    # Axial Feature Injection is NOT part of the PDexFlow paper (borrowed from PepMirror); opt-in only.
-    enabled: bool = False
-    axial_dim: int = 9  # cross(3) + commutator(3) + triple_proj(3)
 
 
 @dataclass
@@ -230,8 +132,7 @@ class PDexFlowModel(nn.Module):
                  sigma_trans: float = 0.1, chi_lora: Optional[Dict] = None, esm: Optional[Dict] = None, cfm_weight: float = 1.0, sym_weight: float = 1.0,
                  seq_weight: float = 1.0, angle_dim: int = 5, use_ot: bool = True,
                  cfm_w_trans: float = 1.0, cfm_w_rot: float = 1.0, cfm_w_ang: float = 1.0,
-                 coord_scale: float = 0.1, afi: Optional[Dict] = None,
-                 trunk_type: str = "geometric", n_rbf: int = 16, ot_mode: str = "minibatch", loss_type: str = "huber"):
+                 coord_scale: float = 0.1, n_rbf: int = 16, loss_type: str = "huber"):
         super().__init__()
         self.d_model = int(d_model)
         self.max_len = int(max_len)
@@ -246,7 +147,6 @@ class PDexFlowModel(nn.Module):
             sym_weight=float(sym_weight),
             seq_weight=float(seq_weight),
             use_ot=bool(use_ot),
-            ot_mode=str(ot_mode),
             loss_type=str(loss_type),
             cfm_w_trans=float(cfm_w_trans),
             cfm_w_rot=float(cfm_w_rot),
@@ -266,32 +166,9 @@ class PDexFlowModel(nn.Module):
         self.ang_in = nn.Linear(self.angle_dim * 2, self.d_model)
         self.t_in = nn.Linear(self.d_model, self.d_model)
 
-        if trunk_type not in ("geometric", "joint"):
-            raise ValueError(f"trunk_type must be 'geometric' (paper) or 'joint' (legacy), got {trunk_type!r}")
-        self.trunk_type = trunk_type
-        if trunk_type == "geometric":
-            # Paper Sec. IV-C: RBF-biased peptide self-attention + receptor cross-attention.
-            self.trunk = GeometricTransformer(self.d_model, int(n_layers), int(n_heads), dropout=float(dropout), n_rbf=int(n_rbf))
-        else:
-            # Legacy trunk: plain self-attention over the concatenated receptor+peptide sequence.
-            encoder_layer = nn.TransformerEncoderLayer(d_model=self.d_model, nhead=int(n_heads), dim_feedforward=self.d_model * 4, dropout=float(dropout),
-                                                       batch_first=True, norm_first=True)
-            self.trunk = nn.TransformerEncoder(encoder_layer, num_layers=int(n_layers), enable_nested_tensor=False)
+        # Paper Sec. IV-C: RBF-biased peptide self-attention + receptor cross-attention.
+        self.trunk = GeometricTransformer(self.d_model, int(n_layers), int(n_heads), dropout=float(dropout), n_rbf=int(n_rbf))
         self._chi_lora_modules: Tuple[ChiLoRALinear, ...] = tuple()
-
-        # === Axial Feature Injection (AFI) ===
-        # AFI modules are inserted before each transformer layer to inject
-        # chirality-sensitive axial features into the hidden state.
-        afi_cfg = AFIConfig()
-        if afi is not None and isinstance(afi, Mapping):
-            afi_cfg = AFIConfig(enabled=bool(afi.get("enable", afi.get("enabled", True))))
-        elif afi is not None and hasattr(afi, "get"):
-            afi_cfg = AFIConfig(enabled=bool(afi.get("enable", afi.get("enabled", True))))
-        self.afi_cfg = afi_cfg
-        self.afi_modules: nn.ModuleList = nn.ModuleList()
-        if self.afi_cfg.enabled:
-            for _ in range(int(n_layers)):
-                self.afi_modules.append(AFIModule(self.d_model, axial_dim=self.afi_cfg.axial_dim))
 
         self.esm_conditioner: Optional[ESM2Conditioner] = None
         self.esm_proj: Optional[nn.Module] = None
@@ -325,20 +202,12 @@ class PDexFlowModel(nn.Module):
         self.out_angles = nn.Sequential(nn.LayerNorm(self.d_model), nn.Linear(self.d_model, self.angle_dim))
         self.out_seq = nn.Sequential(nn.LayerNorm(self.d_model), nn.Linear(self.d_model, self.aatype_vocab))
 
-        # Learnable loss weights (log variances) for Uncertainty Weighting
-        # log_vars[0]: cfm, log_vars[1]: sym, log_vars[2]: seq
-        if self.flow_cfg.auto_loss_weighting:
-            self.loss_log_vars = nn.Parameter(torch.zeros(3))
-        else:
-            self.loss_log_vars = None
-
     def _apply_chi_lora(self):
         """Wrap the trunk projections with Chiral-Bridge LoRA (paper Eq. 7-8).
 
         targets: "attn"      -> q/k/v/out projections of every attention module (self + cross),
                  "attn_out"  -> output projection only,
                  "ffn"       -> both feed-forward projections.
-        The legacy ``joint`` trunk uses nn.MultiheadAttention (packed q/k/v), where only ``out_proj`` can be wrapped.
         """
         targets: Set[str] = set(self.chi_lora_cfg.targets)
         cfg = self.chi_lora_cfg
@@ -353,26 +222,19 @@ class PDexFlowModel(nn.Module):
             if "ffn" in targets:
                 wrap(layer, "linear1")
                 wrap(layer, "linear2")
-            attn_modules = [layer.self_attn] + ([layer.cross_attn] if hasattr(layer, "cross_attn") else [])
-            for att in attn_modules:
-                if "attn" in targets and hasattr(att, "q_proj"):
+            for att in (layer.self_attn, layer.cross_attn):
+                if "attn" in targets:
                     for name in ("q_proj", "k_proj", "v_proj", "out_proj"):
                         wrap(att, name)
-                elif "attn" in targets or "attn_out" in targets:
+                elif "attn_out" in targets:
                     wrap(att, "out_proj")
 
         self._chi_lora_modules = tuple(modules)
 
-        if self.trunk_type == "joint" and hasattr(torch.backends, "mha"):
-            # nn.TransformerEncoderLayer's eval/no_grad fast path reads linear1.weight etc. directly and would
-            # silently bypass the LoRA wrappers at inference time.
-            torch.backends.mha.set_fastpath_enabled(False)
-
         if self.chi_lora_cfg.freeze_backbone:
             for name, param in self.named_parameters():
-                is_lora = "lora_" in name
-                is_chiral_gate = name.endswith("gate_logit") and "afi_modules" not in name  # gamma in G(c)=c*sigmoid(gamma)
-                if not (is_lora or is_chiral_gate):
+                # trainable: LoRA matrices and the chiral gate logit gamma in G(c) = c * sigmoid(gamma)
+                if not ("lora_" in name or name.endswith("gate_logit")):
                     param.requires_grad = False
 
     def _set_chi_lora_gate(self, gate: Optional[torch.Tensor]):
@@ -397,27 +259,8 @@ class PDexFlowModel(nn.Module):
         finally:
             self._clear_chi_lora_gate()
 
-    @staticmethod
-    def _safe_padding_mask(res_mask: torch.Tensor) -> torch.Tensor:
-        """Build Transformer src_key_padding_mask (True = pad) from res_mask (True = valid).
-
-        Guards against rows where every position is padded: nn.TransformerEncoder's
-        softmax degenerates to 0/0 -> NaN if an entire row is masked out. When we
-        detect such a row we flip position 0 to valid; the corresponding token is
-        meaningless (it's a padding slot), but it keeps softmax numerically defined
-        and downstream loss masks (res_mask & generate_mask) still exclude it.
-        """
-        key_pad = ~res_mask
-        all_pad_rows = key_pad.all(dim=-1)
-        if all_pad_rows.any():
-            key_pad = key_pad.clone()
-            key_pad[all_pad_rows, 0] = False
-        return key_pad
-
     def _esm_tokens(self, seq_t: torch.Tensor, gen_mask: torch.Tensor) -> torch.Tensor:
         """Tokens fed to ESM-2. Paper: the frozen pLM encodes the *receptor*; hide the noisy peptide tokens."""
-        if self.trunk_type != "geometric":
-            return seq_t
         return torch.where(gen_mask.bool(), torch.full_like(seq_t, du.MASK_TOKEN_INDEX), seq_t)
 
     def _embed_t(self, t: torch.Tensor, L: int) -> torch.Tensor:
@@ -485,63 +328,12 @@ class PDexFlowModel(nn.Module):
         # centering first keeps the pairwise_cost diagonal tight.
         if pep_mask.any():
             trans_0 = self._center_noise_on_pep(trans_0, pep_mask)
-        if self.flow_cfg.use_ot and pep_mask.any() and self.flow_cfg.ot_mode == "minibatch":
+        if self.flow_cfg.use_ot and pep_mask.any():
             # Mini-ROT (paper Eq. 13): one assignment between the B priors and the B data samples.
             trans_0, rot_0, ang_0 = minibatch_ot.minibatch_ot_pair(
                 (trans_0, rot_0, ang_0), (trans_1, rot_1, ang_1), pep_mask
             )
-        elif self.flow_cfg.use_ot and pep_mask.any():
-            # Legacy ot_mode='residue': OT aligns noisy samples to data within peptide residues, improving
-            # straightness of flow lines. We build per-b cost matrices first, then
-            # pad to uniform N_max and issue ONE batched solve_ot call — this lets
-            # the internal ThreadPoolExecutor (src/data/minibatch_ot.py) actually
-            # parallelize Hungarian across B. The prior per-b `solve_ot` loop
-            # always hit the `B <= 2` inline branch inside solve_ot and wasted R6.
-            n_per_b = pep_mask.sum(dim=1).tolist()  # single CPU sync, unavoidable
-            n_max = max(n_per_b) if n_per_b else 0
-            if n_max > 0:
-                idxs: list = [None] * B
-                srcs: list = [None] * B  # (trans, rot, ang) snapshots pre-shuffle
-                # Padding cost uses `1e6` + zero diagonal so Hungarian pins padding
-                # rows to padding cols (trivial assignment, no interference with
-                # real peptide rows). Matches the `mask1` sentinel in pairwise_cost.
-                cost_batch = torch.full(
-                    (B, n_max, n_max), 1e6, device=device, dtype=trans_1.dtype
-                )
-                diag_arange = torch.arange(n_max, device=device)
-                for b in range(B):
-                    n = n_per_b[b]
-                    if n == 0:
-                        cost_batch[b, diag_arange, diag_arange] = 0.0
-                        continue
-                    idx = torch.nonzero(pep_mask[b], as_tuple=False).squeeze(-1)
-                    z0_b = (trans_0[b:b + 1, idx], rot_0[b:b + 1, idx], ang_0[b:b + 1, idx])
-                    z1_b = (trans_1[b:b + 1, idx], rot_1[b:b + 1, idx], ang_1[b:b + 1, idx])
-                    cost_batch[b, :n, :n] = minibatch_ot.pairwise_cost(z0_b, z1_b)[0]
-                    if n < n_max:
-                        pad_rows = diag_arange[n:]
-                        cost_batch[b, pad_rows, pad_rows] = 0.0
-                    idxs[b] = idx
-                    # Snapshot pre-shuffle so the scatter below doesn't read what it just wrote.
-                    srcs[b] = (trans_0[b, idx].clone(), rot_0[b, idx].clone(), ang_0[b, idx].clone())
 
-                # Single batched Hungarian. For B>2 the ThreadPoolExecutor in
-                # solve_ot dispatches scipy calls across threads; for B<=2 this
-                # degenerates to inline solves (identical to pre-refactor behavior).
-                perm_batch = minibatch_ot.solve_ot(cost_batch)  # (B, n_max)
-
-                for b in range(B):
-                    if idxs[b] is None:
-                        continue
-                    n = n_per_b[b]
-                    perm = perm_batch[b, :n]  # values in [0, n) by padding construction
-                    idx = idxs[b]
-                    src_trans, src_rot, src_ang = srcs[b]
-                    trans_0[b, idx] = src_trans[perm]
-                    rot_0[b, idx] = src_rot[perm]
-                    ang_0[b, idx] = src_ang[perm]
-
-        
         sigma_min = getattr(self.flow_cfg, 'sigma_min', 1e-4)
         trans_t = (1.0 - t[..., None]) * trans_0 + t[..., None] * trans_1
         # t should be broadcastable to (B,L,1) inside slerp; using two new axes would
@@ -645,9 +437,8 @@ class PDexFlowModel(nn.Module):
                 esm_cond = self.esm_proj(esm_cond)  # [B, L, hidden_size] -> [B, L, d_model]
             if self.esm_adapter is not None:
                 esm_cond = self.esm_adapter(esm_cond, chirality_token=chir)  # [B, L, d_model] -> [B, L, d_model]
-            if self.trunk_type == "geometric":
-                # receptor context only (peptide tokens carry no pLM semantics in the paper's design)
-                esm_cond = esm_cond * ((gen_mask == 0) & res_mask).unsqueeze(-1).to(esm_cond.dtype)
+            # receptor context only (peptide tokens carry no pLM semantics in the paper's design)
+            esm_cond = esm_cond * ((gen_mask == 0) & res_mask).unsqueeze(-1).to(esm_cond.dtype)
             if esm_cond.shape[-1] != self.d_model:
                 raise ValueError(f"esm_cond last dim must match d_model={self.d_model}, got {esm_cond.shape[-1]}")
             x = x + esm_cond
@@ -675,28 +466,9 @@ class PDexFlowModel(nn.Module):
             )
 
         # Chiral gate G(c) = c * sigmoid(gamma): sigmoid(gamma) lives inside ChiralBridgeLoRA, c is supplied here.
-        # The gate scope wraps *every* trunk path (the old AFI path forgot it, leaving LoRA permanently off).
-        rot6d_input = rotmat_to_6d(rot_t)
-        key_pad_mask = self._safe_padding_mask(res_mask)
-        if self.chi_lora_cfg.enabled:
-            gate = chir.view(B, 1, 1).to(device=seq_t.device, dtype=x.dtype)
-            if self.trunk_type == "joint":
-                gate = gate * (gen_mask.bool() & res_mask.bool()).unsqueeze(-1).to(x.dtype)  # legacy: peptide tokens only
-        else:
-            gate = None
-
-        use_afi = self.afi_cfg.enabled and len(self.afi_modules) > 0
+        gate = chir.view(B, 1, 1).to(device=seq_t.device, dtype=x.dtype) if self.chi_lora_cfg.enabled else None
         with self._chi_lora_gate(gate) if gate is not None else contextlib.nullcontext():
-            if self.trunk_type == "geometric":
-                hook = (lambda i, h_in: self.afi_modules[i](h_in, trans_t, rot6d_input)) if use_afi else None
-                h = self.trunk(x, trans_t / self.coord_scale, res_mask, gen_mask.bool(), pre_layer_hook=hook)
-            elif use_afi:
-                h = x
-                for i, layer in enumerate(self.trunk.layers):
-                    h = self.afi_modules[i](h, trans_t, rot6d_input)
-                    h = layer(h, src_key_padding_mask=key_pad_mask)
-            else:
-                h = self.trunk(x, src_key_padding_mask=key_pad_mask)
+            h = self.trunk(x, trans_t / self.coord_scale, res_mask, gen_mask.bool())
 
         pred_trans_1 = self.out_trans(h)
         pred_rot_1 = rot6d_to_rotmat(self.out_rot6d(h))
@@ -710,42 +482,12 @@ class PDexFlowModel(nn.Module):
             'pred_seq_logits': pred_seq_logits,
         }
 
-    # Kendall-style uncertainty weighting bounds: σ² ∈ [e^-5, e^5] ≈ [6.7e-3, 148]
-    # keeps precisions = exp(-log_var) in [e^-5, e^5] and prevents runaway during AMP.
-    _LOG_VAR_MIN = -5.0
-    _LOG_VAR_MAX = 5.0
-
     def _compute_total_loss(self, cfm_loss, sym_loss, seq_loss, sym_weight_override):
-        """Combine component losses. Returns (total, w_cfm, w_sym, w_seq) for logging.
-
-        Modes:
-          - Manual (loss_log_vars is None): honor cfm_weight/seq_weight and either the
-            override or flow_cfg.sym_weight.
-          - Auto Kendall (loss_log_vars present): L = 0.5*exp(-s)*L_i + 0.5*s. When
-            sym_weight_override is provided (sym warmup still active), sym keeps manual
-            weight while cfm/seq are learned.
-        """
-        if self.loss_log_vars is None:
-            w_cfm = self.flow_cfg.cfm_weight
-            w_seq = self.flow_cfg.seq_weight
-            w_sym = sym_weight_override if sym_weight_override is not None else self.flow_cfg.sym_weight
-            total = w_cfm * cfm_loss + w_sym * sym_loss + w_seq * seq_loss
-            return total, w_cfm, w_sym, w_seq
-
-        log_vars = self.loss_log_vars.clamp(min=self._LOG_VAR_MIN, max=self._LOG_VAR_MAX)
-        prec = torch.exp(-log_vars)
-        w_cfm = 0.5 * prec[0]
-        w_seq = 0.5 * prec[2]
-        L_cfm = w_cfm * cfm_loss + 0.5 * log_vars[0]
-        L_seq = w_seq * seq_loss + 0.5 * log_vars[2]
-
-        if sym_weight_override is not None:
-            w_sym = sym_weight_override
-            total = L_cfm + w_sym * sym_loss + L_seq
-        else:
-            w_sym = 0.5 * prec[1]
-            L_sym = w_sym * sym_loss + 0.5 * log_vars[1]
-            total = L_cfm + L_sym + L_seq
+        """L_total = w_cfm L_flow + w_sym L_sym + w_seq L_seq (paper Eq. 12). Returns (total, w_cfm, w_sym, w_seq) for logging."""
+        w_cfm = self.flow_cfg.cfm_weight
+        w_seq = self.flow_cfg.seq_weight
+        w_sym = sym_weight_override if sym_weight_override is not None else self.flow_cfg.sym_weight
+        total = w_cfm * cfm_loss + w_sym * sym_loss + w_seq * seq_loss
         return total, w_cfm, w_sym, w_seq
 
     def forward(self, batch: Dict[str, torch.Tensor], sym_weight_override: Optional[float] = None) -> Dict[str, torch.Tensor]:

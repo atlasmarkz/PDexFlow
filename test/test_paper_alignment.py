@@ -96,10 +96,9 @@ def test_minibatch_ot_pairs_across_samples_and_is_parity_invariant():
 
 
 # ------------------------------------------------------------------ Chiral-Bridge LoRA
-@pytest.mark.parametrize("trunk_type,afi", [("geometric", None), ("joint", None), ("geometric", {"enable": True}), ("joint", {"enable": True})])
-def test_chiral_bridge_lora_active_only_for_d(trunk_type, afi):
+def test_chiral_bridge_lora_active_only_for_d():
     lora = {"enable": True, "rank": 4, "alpha": 8.0, "dropout": 0.0}
-    model = _tiny(chi_lora=lora, trunk_type=trunk_type, afi=afi).eval()
+    model = _tiny(chi_lora=lora).eval()
     assert len(model._chi_lora_modules) > 0
     for m in model._chi_lora_modules:
         torch.nn.init.normal_(m.lora_B, std=0.5)  # B is zero-initialised; make the branch non-trivial

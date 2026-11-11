@@ -23,7 +23,6 @@ import os
 import sys
 
 import torch
-import torch.nn.functional as F
 
 # Run-from-root path shim so `python scripts/smoke_cpu.py` works.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

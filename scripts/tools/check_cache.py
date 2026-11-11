@@ -3,7 +3,6 @@ import os
 import pickle
 import lmdb
 import torch
-from glob import glob
 
 def check_lmdb_cache(cache_path):
     """Check all samples in LMDB cache for invalid geometry."""
@@ -57,7 +56,6 @@ def check_lmdb_cache(cache_path):
 
 
 if __name__ == "__main__":
-    import sys
     cache_paths = [
         ".cache/pep_cache_lora_d",
         ".cache/pep_cache",

@@ -60,7 +60,6 @@ def check_cache(lmdb_path, label="cache"):
 
 
 if __name__ == "__main__":
-    import sys
     base = ".cache/pep_cache"
 
     l_cache = os.path.join(base, "pepmerge_train_structure_cache.lmdb")

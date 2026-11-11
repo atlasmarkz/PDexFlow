@@ -7,7 +7,6 @@ import torch
 from tqdm.auto import tqdm
 from typing import Dict
 
-from src.data.parity import parity_positions
 from src.data.parsers import parse_pdb, pepmerge_paths
 from src.data.pep_constants import BBHeavyAtom
 from src.data.torsion import get_torsion_angle

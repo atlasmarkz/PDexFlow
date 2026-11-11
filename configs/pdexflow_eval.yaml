@@ -11,7 +11,6 @@ train:
   seed: 0
 
 model:
-  trunk_type: geometric
   n_rbf: 16
   d_model: 256
   n_layers: 6
@@ -25,7 +24,6 @@ model:
 flow:
   sigma_trans: 0.1
   use_ot: true
-  ot_mode: minibatch
   num_steps: 30
   angle_purify: true
 
@@ -40,8 +38,6 @@ chi_lora:
 esm:
   enable: false
 
-afi:
-  enable: false
 
 sample:
   device: cuda

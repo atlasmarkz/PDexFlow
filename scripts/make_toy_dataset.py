@@ -15,7 +15,6 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data import so3  # noqa: E402
-from src.data.pep_constants import BBHeavyAtom  # noqa: E402
 from src.data.torsion import full_atom_reconstruction, get_heavyatom_mask  # noqa: E402
 from src.data.writers import save_pdb  # noqa: E402
 

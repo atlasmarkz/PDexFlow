@@ -1,6 +1,6 @@
 """Minibatch Riemannian OT utilities for PDexFlow."""
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional, Tuple, Union
+from typing import Optional
 
 import torch
 
@@ -25,41 +25,6 @@ def _get_ot_pool() -> ThreadPoolExecutor:
     if _OT_THREAD_POOL is None:
         _OT_THREAD_POOL = ThreadPoolExecutor(max_workers=_OT_MAX_WORKERS, thread_name_prefix="ot")
     return _OT_THREAD_POOL
-
-
-def pairwise_cost(z0: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
-               z1: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
-               mask1: Optional[torch.Tensor] = None) -> torch.Tensor:
-    """Compute Mini-ROT cost C_ij = d_M(z0(i), z1(j))^2.
-
-    Supports two modes:
-      - Euclidean (legacy): z0/z1 are tensors (B,N,3).
-      - Riemannian (PH-Flow): z0/z1 are tuples (trans, rot, ang).
-    """
-    if isinstance(z0, tuple) or isinstance(z1, tuple):
-        if not (isinstance(z0, tuple) and isinstance(z1, tuple) and len(z0) == 3 and len(z1) == 3):
-            raise ValueError("For Riemannian cost, z0 and z1 must be (trans, rot, ang) tuples")
-        trans0, rot0, ang0 = z0
-        trans1, rot1, ang1 = z1
-        if trans0.shape != trans1.shape:
-            raise ValueError(f"trans shapes must match, got {tuple(trans0.shape)} vs {tuple(trans1.shape)}")
-        B, N, _ = trans0.shape
-        # broadcast pairwise distances
-        d_trans = (trans0[:, :, None, :] - trans1[:, None, :, :]).square().sum(-1)
-        d_rot = so3.geodesic_distance(rot0[:, :, None, :, :], rot1[:, None, :, :, :]).square()
-        d_ang = torus.tor_logmap(ang0[:, :, None, :], ang1[:, None, :, :]).square().sum(-1)
-        cost = d_trans + d_rot + d_ang
-    else:
-        if z0.shape != z1.shape:
-            raise ValueError(f"x0 and x1 must have the same shape, got {tuple(z0.shape)} vs {tuple(z1.shape)}")
-        B, N, _ = z0.shape
-        diff = z0[:, :, None, :] - z1[:, None, :, :]
-        cost = diff.square().sum(-1)
-
-    if mask1 is not None:
-        mask1 = mask1.to(cost.dtype)
-        cost = cost + (1.0 - mask1[:, None, :]) * 1e6
-    return cost
 
 
 def _greedy_permutation(cost_b: torch.Tensor) -> torch.Tensor:
@@ -118,32 +83,6 @@ def solve_ot(cost: torch.Tensor) -> torch.Tensor:
     perm = torch.stack(perms, dim=0).to(cost.device)
     return perm
 
-
-
-def minibatch_optimal_transport(z0: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
-                           z1: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
-                           mask: Optional[torch.Tensor] = None) -> Tuple[Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]], torch.Tensor]:
-    """Hungarian-based OT alignment wrapper matching prompt nomenclature.
-
-    Accepts either Euclidean tensors or (trans, rot, ang) tuples.
-    """
-    C = pairwise_cost(z0, z1, mask)
-    perm = solve_ot(C)
-
-    if isinstance(z0, tuple):
-        trans0, rot0, ang0 = z0
-        B, N, _ = trans0.shape
-        batch_idx = torch.arange(B, device=trans0.device)[:, None].expand(-1, N)
-        z0_perm = (
-            trans0[batch_idx, perm],
-            rot0[batch_idx, perm],
-            ang0[batch_idx, perm],
-        )
-    else:
-        B, N, _ = z0.shape
-        batch_idx = torch.arange(B, device=z0.device)[:, None].expand(-1, N)
-        z0_perm = z0[batch_idx, perm]
-    return z0_perm, perm
 
 
 def minibatch_ot_pair(z0, z1, pep_mask: torch.Tensor):

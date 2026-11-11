@@ -10,9 +10,9 @@ Status of each item was checked against the code; "tested" means covered by `tes
 | Geodesic probability path (Eq. 3) | `PDexFlowModel.corrupt_batch`: linear (translation), SO(3) geodesic, torus geodesic | implemented |
 | `L_flow` (Eq. 4) | `src/flow.py::flow_matching_loss` | `flow.loss_type=l2` is the paper's squared norm; **default `huber`** (robust against the `1/(1-t)` velocity amplification) |
 | Symmetry Consistency Loss `L_sym` (Eq. 5): two passes `(z,c)` and `(P z, 1-c)` | `src/flow.py::compute_symmetry_loss` | tested: zero for an equivariant field, positive otherwise |
-| Mini-ROT (Eq. 13): assignment between the `B` priors and `B` data samples | `src/data/minibatch_ot.py::minibatch_ot_pair`, `flow.ot_mode=minibatch` (default) | tested, parity-invariant cost; the previous within-peptide residue assignment is kept as `ot_mode=residue` |
+| Mini-ROT (Eq. 13): assignment between the `B` priors and `B` data samples | `src/data/minibatch_ot.py::minibatch_ot_pair`, enabled by `flow.use_ot` | tested, parity-invariant cost |
 | Input featurization (Eq. 9) | `PDexFlowModel.predict_x1` | implemented (plus position / generate-mask embeddings) |
-| Geometric Transformer: RBF distance features, peptide self-attention + receptor cross-attention (Sec. IV-C) | `src/models/geometric_transformer.py` (`model.trunk_type=geometric`, default) | tested; the old plain-transformer trunk remains as `trunk_type=joint` (old checkpoints are not compatible with the new trunk) |
+| Geometric Transformer: RBF distance features, peptide self-attention + receptor cross-attention (Sec. IV-C) | `src/models/geometric_transformer.py` | tested; the old plain-transformer trunk, its checkpoints and Axial Feature Injection were removed |
 | Chiral-Bridge LoRA `y = W0 x + G(c)·α/r·(BA)x`, `G(c) = c·σ(γ)` (Eq. 7-8) on q/k/v/out and FFN | `src/models/chiral_gated_lora.py`, `PDexFlowModel._apply_chi_lora` (`chi_lora.targets=[attn, ffn]`) | tested: inactive for `c=0`, active for `c=1`; `γ` stays trainable with a frozen backbone |
 | Frozen ESM-2 receptor features | `src/models/semantic_conditioner.py` (`esm.enable`) | receptor-only tokens are encoded and added to receptor tokens; **not covered by tests** (needs `fair-esm` and weights); default model is `esm2_t6_8M` |
 | Chirality-preserving NeRF decoder `X = R·Q_c·NeRF(a,χ) + x`, `Q_c = diag(1,1,-1)` for D (Eq. 10-11) | `src/models/hard_geometric_decoder.py` | tested: `decode(measure(D structure))` reproduces the structure to <1e-2 Å; D-mode sampling gives 0 % chirality error, switching the decoder off gives 100 % |
@@ -21,7 +21,6 @@ Status of each item was checked against the code; "tested" means covered by `tes
 | Ablations (w/o `L_sym`, Chiral-Bridge, Hard Constraint, ROT) | `flow.sym_weight=0`, `chi_lora.enable=false`, `sample.use_hard_decoder=false`, `flow.use_ot=false` | available |
 
 ## Not part of the paper
-* **Axial Feature Injection** (`afi.enable`, borrowed from PepMirror) is off by default.
 * Auxiliary sequence masking (peptide tokens are masked with probability `1-t`) is an implementation detail of the sequence head.
 
 ## Evaluation metrics

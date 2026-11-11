@@ -14,7 +14,7 @@ PepMerge 数据集分布分析脚本
 import os
 import sys
 import argparse
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -346,7 +346,7 @@ def plot_torsion_analysis(phis, psis, omegas, output_dir, suffix=''):
         cmap = plt.cm.Blues
         ax.contourf(xx, yy, f, levels=50, cmap=cmap, alpha=0.9)
         ax.contour(xx, yy, f, levels=levels, colors='#D2B48C', linewidths=[1.0, 1.2, 1.5, 1.8, 2.0])
-    except Exception as e:
+    except Exception:
         pass
 
     ax.set_xlabel('Phi (degrees)')

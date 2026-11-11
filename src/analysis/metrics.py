@@ -2,7 +2,7 @@
 
 Includes chirality error, RMSD (Kabsch), and Amino Acid Recovery (AAR).
 """
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 
