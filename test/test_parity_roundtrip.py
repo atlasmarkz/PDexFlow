@@ -68,3 +68,17 @@ def test_hard_decoder_l_mode_identity():
     m = mask15[..., :14]
     err = (out[..., :14, :] - pos_l).norm(dim=-1)[m]
     assert err.max() < 1e-2, f"L-mode decode mismatch, max atom error {err.max():.4f} A"
+
+
+def test_so3_log_exp_roundtrip_and_distance():
+    from src.data import so3
+    g = torch.Generator().manual_seed(5)
+    w = torch.randn(64, 3, generator=g)
+    w = w / w.norm(dim=-1, keepdim=True) * (torch.rand(64, 1, generator=g) * 3.0 + 0.05)  # angles in (0.05, 3.05) < pi
+    R = so3.exp_map(w)
+    w_back = so3.log_map(R)
+    assert torch.allclose(w_back, w, atol=1e-3), "log_map is not the inverse of exp_map"
+    assert w_back.norm(dim=-1).max() <= math.pi + 1e-3
+    ang = 0.7
+    Rz = so3.exp_map(torch.tensor([0.0, 0.0, ang]))
+    assert abs(so3.geodesic_distance(torch.eye(3), Rz).item() - ang) < 1e-4

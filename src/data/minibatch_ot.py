@@ -167,3 +167,57 @@ def minibatch_optimal_transport(z0: Union[torch.Tensor, Tuple[torch.Tensor, torc
         batch_idx = torch.arange(B, device=z0.device)[:, None].expand(-1, N)
         z0_perm = z0[batch_idx, perm]
     return z0_perm, perm
+
+
+def minibatch_ot_pair(z0, z1, pep_mask: torch.Tensor):
+    """Mini-ROT of the paper (Eq. 13): optimal assignment between the B prior samples and B data samples.
+
+        pi* = argmin_{pi in Pi_B} sum_i d_M^2(z0_i, z1_{pi(i)})
+
+    d_M^2 is the product-manifold squared distance (translation + SO(3) geodesic + torus), averaged over the
+    data sample's peptide residues. Prior samples are i.i.d., so slot l of prior i is compared with the l-th
+    peptide residue of data sample j. The cost is parity-invariant, as required by Theorem 1.
+
+    Args:
+        z0, z1: tuples (trans (B,L,3), rot (B,L,3,3), ang (B,L,A)) of prior / data states.
+        pep_mask: (B,L) bool, generated peptide residues.
+    Returns:
+        z0 re-assigned so that z0_out[j] is the prior matched to data sample j (peptide residues only;
+        other positions are untouched).
+    """
+    trans0, rot0, ang0 = z0
+    trans1, rot1, ang1 = z1
+    B, L, _ = trans0.shape
+    n_per = pep_mask.sum(dim=1)
+    n_max = int(n_per.max().item()) if B > 0 else 0
+    if B < 2 or n_max == 0:
+        return z0
+
+    # Gather peptide residues to the front: idx (B, n_max) = peptide positions, padded with non-peptide positions.
+    order = torch.argsort((~pep_mask).to(torch.int8), dim=1, stable=True)[:, :n_max]
+    valid = torch.arange(n_max, device=pep_mask.device)[None, :] < n_per[:, None]  # (B, n_max)
+
+    def g(x):
+        idx = order.view(B, n_max, *([1] * (x.dim() - 2))).expand(B, n_max, *x.shape[2:])
+        return torch.gather(x, 1, idx)
+
+    t0, r0, a0 = g(trans0), g(rot0), g(ang0)
+    t1, r1, a1 = g(trans1), g(rot1), g(ang1)
+
+    d_t = (t0[:, None] - t1[None]).square().sum(-1)                                   # (B_prior, B_data, n_max)
+    d_r = so3.geodesic_distance(r0[:, None], r1[None]).square()
+    d_a = torus.tor_logmap(a0[:, None], a1[None]).square().sum(-1)
+    w = valid[None].to(d_t.dtype)                                                       # weights by data sample j
+    cost = ((d_t + d_r + d_a) * w).sum(-1) / n_per[None, :].clamp(min=1).to(d_t.dtype)  # (B_prior, B_data)
+
+    perm = solve_ot(cost[None])[0]            # perm[i] = data index matched to prior i
+    inv = torch.empty_like(perm)
+    inv[perm] = torch.arange(B, device=perm.device)  # inv[j] = prior index matched to data j
+
+    def put(full, gathered_aligned):
+        idx = order.view(B, n_max, *([1] * (full.dim() - 2))).expand(B, n_max, *full.shape[2:])
+        vm = valid.view(B, n_max, *([1] * (full.dim() - 2)))
+        merged = torch.where(vm, gathered_aligned, torch.gather(full, 1, idx))
+        return full.scatter(1, idx, merged)
+
+    return (put(trans0, t0[inv]), put(rot0, r0[inv]), put(ang0, a0[inv]))

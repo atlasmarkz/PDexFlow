@@ -16,6 +16,7 @@ from src.data import utils as du
 from src.data.pep_constants import BBHeavyAtom
 from src.data.torsion import full_atom_reconstruction, get_heavyatom_mask
 from src.models.chiral_gated_lora import ChiralBridgeLoRA
+from src.models.geometric_transformer import GeometricTransformer
 from src.models.geometry import construct_3d_basis
 from src.models.semantic_conditioner import ESM2Conditioner, ESM2Config
 
@@ -136,6 +137,9 @@ class FlowConfig:
     sym_weight: float = 1.0
     seq_weight: float = 1.0
     use_ot: bool = True
+    # 'minibatch': Mini-ROT of paper Eq. 13 (assignment between the B priors and B data samples of a minibatch)
+    # 'residue':   legacy within-peptide residue-level assignment
+    ot_mode: str = "minibatch"
     # per-component weights for velocity flow-matching (trans, rot, ang)
     cfm_w_trans: float = 1.0
     cfm_w_rot: float = 1.0
@@ -146,7 +150,8 @@ class FlowConfig:
 
 @dataclass
 class AFIConfig:
-    enabled: bool = True
+    # Axial Feature Injection is NOT part of the PDexFlow paper (borrowed from PepMirror); opt-in only.
+    enabled: bool = False
     axial_dim: int = 9  # cross(3) + commutator(3) + triple_proj(3)
 
 
@@ -156,7 +161,9 @@ class ChiLoRAConfig:
     rank: int = 8
     alpha: float = 16.0
     dropout: float = 0.0
-    targets: Tuple[str, ...] = ("attn_out", "ffn")
+    # "attn": q/k/v/out projections of every attention (paper Sec. IV-B); "attn_out": output projection only;
+    # "ffn": both feed-forward projections.
+    targets: Tuple[str, ...] = ("attn", "ffn")
     freeze_backbone: bool = False
 
     @classmethod
@@ -221,7 +228,8 @@ class PDexFlowModel(nn.Module):
                  sigma_trans: float = 0.1, chi_lora: Optional[Dict] = None, esm: Optional[Dict] = None, cfm_weight: float = 1.0, sym_weight: float = 1.0,
                  seq_weight: float = 1.0, angle_dim: int = 5, use_ot: bool = True,
                  cfm_w_trans: float = 1.0, cfm_w_rot: float = 1.0, cfm_w_ang: float = 1.0,
-                 coord_scale: float = 0.1, afi: Optional[Dict] = None):
+                 coord_scale: float = 0.1, afi: Optional[Dict] = None,
+                 trunk_type: str = "geometric", n_rbf: int = 16, ot_mode: str = "minibatch"):
         super().__init__()
         self.d_model = int(d_model)
         self.max_len = int(max_len)
@@ -236,6 +244,7 @@ class PDexFlowModel(nn.Module):
             sym_weight=float(sym_weight),
             seq_weight=float(seq_weight),
             use_ot=bool(use_ot),
+            ot_mode=str(ot_mode),
             cfm_w_trans=float(cfm_w_trans),
             cfm_w_rot=float(cfm_w_rot),
             cfm_w_ang=float(cfm_w_ang),
@@ -254,9 +263,17 @@ class PDexFlowModel(nn.Module):
         self.ang_in = nn.Linear(self.angle_dim * 2, self.d_model)
         self.t_in = nn.Linear(self.d_model, self.d_model)
 
-        encoder_layer = nn.TransformerEncoderLayer(d_model=self.d_model, nhead=int(n_heads), dim_feedforward=self.d_model * 4, dropout=float(dropout),
-                                                   batch_first=True, norm_first=True)
-        self.trunk = nn.TransformerEncoder(encoder_layer, num_layers=int(n_layers), enable_nested_tensor=False)
+        if trunk_type not in ("geometric", "joint"):
+            raise ValueError(f"trunk_type must be 'geometric' (paper) or 'joint' (legacy), got {trunk_type!r}")
+        self.trunk_type = trunk_type
+        if trunk_type == "geometric":
+            # Paper Sec. IV-C: RBF-biased peptide self-attention + receptor cross-attention.
+            self.trunk = GeometricTransformer(self.d_model, int(n_layers), int(n_heads), dropout=float(dropout), n_rbf=int(n_rbf))
+        else:
+            # Legacy trunk: plain self-attention over the concatenated receptor+peptide sequence.
+            encoder_layer = nn.TransformerEncoderLayer(d_model=self.d_model, nhead=int(n_heads), dim_feedforward=self.d_model * 4, dropout=float(dropout),
+                                                       batch_first=True, norm_first=True)
+            self.trunk = nn.TransformerEncoder(encoder_layer, num_layers=int(n_layers), enable_nested_tensor=False)
         self._chi_lora_modules: Tuple[ChiLoRALinear, ...] = tuple()
 
         # === Axial Feature Injection (AFI) ===
@@ -313,22 +330,46 @@ class PDexFlowModel(nn.Module):
             self.loss_log_vars = None
 
     def _apply_chi_lora(self):
+        """Wrap the trunk projections with Chiral-Bridge LoRA (paper Eq. 7-8).
+
+        targets: "attn"      -> q/k/v/out projections of every attention module (self + cross),
+                 "attn_out"  -> output projection only,
+                 "ffn"       -> both feed-forward projections.
+        The legacy ``joint`` trunk uses nn.MultiheadAttention (packed q/k/v), where only ``out_proj`` can be wrapped.
+        """
         targets: Set[str] = set(self.chi_lora_cfg.targets)
+        cfg = self.chi_lora_cfg
         modules = []
+
+        def wrap(parent, attr):
+            mod = ChiralBridgeLoRA(getattr(parent, attr), rank=cfg.rank, alpha=cfg.alpha, dropout=cfg.dropout, gate_init=0.0)
+            setattr(parent, attr, mod)
+            modules.append(mod)
+
         for layer in self.trunk.layers:
             if "ffn" in targets:
-                layer.linear1 = ChiralBridgeLoRA(layer.linear1, rank=self.chi_lora_cfg.rank, alpha=self.chi_lora_cfg.alpha, dropout=self.chi_lora_cfg.dropout, gate_init=0.0)
-                layer.linear2 = ChiralBridgeLoRA(layer.linear2, rank=self.chi_lora_cfg.rank, alpha=self.chi_lora_cfg.alpha, dropout=self.chi_lora_cfg.dropout, gate_init=0.0)
-                modules.extend([layer.linear1, layer.linear2])
-            if "attn_out" in targets:
-                layer.self_attn.out_proj = ChiralBridgeLoRA(layer.self_attn.out_proj, rank=self.chi_lora_cfg.rank, alpha=self.chi_lora_cfg.alpha, dropout=self.chi_lora_cfg.dropout, gate_init=0.0)
-                modules.append(layer.self_attn.out_proj)
+                wrap(layer, "linear1")
+                wrap(layer, "linear2")
+            attn_modules = [layer.self_attn] + ([layer.cross_attn] if hasattr(layer, "cross_attn") else [])
+            for att in attn_modules:
+                if "attn" in targets and hasattr(att, "q_proj"):
+                    for name in ("q_proj", "k_proj", "v_proj", "out_proj"):
+                        wrap(att, name)
+                elif "attn" in targets or "attn_out" in targets:
+                    wrap(att, "out_proj")
 
         self._chi_lora_modules = tuple(modules)
 
+        if self.trunk_type == "joint" and hasattr(torch.backends, "mha"):
+            # nn.TransformerEncoderLayer's eval/no_grad fast path reads linear1.weight etc. directly and would
+            # silently bypass the LoRA wrappers at inference time.
+            torch.backends.mha.set_fastpath_enabled(False)
+
         if self.chi_lora_cfg.freeze_backbone:
             for name, param in self.named_parameters():
-                if "lora_" not in name:
+                is_lora = "lora_" in name
+                is_chiral_gate = name.endswith("gate_logit") and "afi_modules" not in name  # gamma in G(c)=c*sigmoid(gamma)
+                if not (is_lora or is_chiral_gate):
                     param.requires_grad = False
 
     def _set_chi_lora_gate(self, gate: Optional[torch.Tensor]):
@@ -369,6 +410,12 @@ class PDexFlowModel(nn.Module):
             key_pad = key_pad.clone()
             key_pad[all_pad_rows, 0] = False
         return key_pad
+
+    def _esm_tokens(self, seq_t: torch.Tensor, gen_mask: torch.Tensor) -> torch.Tensor:
+        """Tokens fed to ESM-2. Paper: the frozen pLM encodes the *receptor*; hide the noisy peptide tokens."""
+        if self.trunk_type != "geometric":
+            return seq_t
+        return torch.where(gen_mask.bool(), torch.full_like(seq_t, du.MASK_TOKEN_INDEX), seq_t)
 
     def _embed_t(self, t: torch.Tensor, L: int) -> torch.Tensor:
         # t: (B,1) -> (B,L,d)
@@ -435,8 +482,13 @@ class PDexFlowModel(nn.Module):
         # centering first keeps the pairwise_cost diagonal tight.
         if pep_mask.any():
             trans_0 = self._center_noise_on_pep(trans_0, pep_mask)
-        if self.flow_cfg.use_ot and pep_mask.any():
-            # OT aligns noisy samples to data within peptide residues, improving
+        if self.flow_cfg.use_ot and pep_mask.any() and self.flow_cfg.ot_mode == "minibatch":
+            # Mini-ROT (paper Eq. 13): one assignment between the B priors and the B data samples.
+            trans_0, rot_0, ang_0 = minibatch_ot.minibatch_ot_pair(
+                (trans_0, rot_0, ang_0), (trans_1, rot_1, ang_1), pep_mask
+            )
+        elif self.flow_cfg.use_ot and pep_mask.any():
+            # Legacy ot_mode='residue': OT aligns noisy samples to data within peptide residues, improving
             # straightness of flow lines. We build per-b cost matrices first, then
             # pad to uniform N_max and issue ONE batched solve_ot call — this lets
             # the internal ThreadPoolExecutor (src/data/minibatch_ot.py) actually
@@ -577,7 +629,7 @@ class PDexFlowModel(nn.Module):
         esm_cond = batch.get('esm_cond', None)
         if esm_cond is None and self.esm_conditioner is not None:
             with torch.no_grad():
-                esm_cond, _ = self.esm_conditioner(seq_t, res_mask)
+                esm_cond, _ = self.esm_conditioner(self._esm_tokens(seq_t, gen_mask), res_mask)
         if esm_cond is not None:
             if not isinstance(esm_cond, torch.Tensor):
                 raise TypeError(f"esm_cond must be a torch.Tensor, got {type(esm_cond)}")
@@ -590,6 +642,9 @@ class PDexFlowModel(nn.Module):
                 esm_cond = self.esm_proj(esm_cond)  # [B, L, hidden_size] -> [B, L, d_model]
             if self.esm_adapter is not None:
                 esm_cond = self.esm_adapter(esm_cond, chirality_token=chir)  # [B, L, d_model] -> [B, L, d_model]
+            if self.trunk_type == "geometric":
+                # receptor context only (peptide tokens carry no pLM semantics in the paper's design)
+                esm_cond = esm_cond * ((gen_mask == 0) & res_mask).unsqueeze(-1).to(esm_cond.dtype)
             if esm_cond.shape[-1] != self.d_model:
                 raise ValueError(f"esm_cond last dim must match d_model={self.d_model}, got {esm_cond.shape[-1]}")
             x = x + esm_cond
@@ -616,31 +671,28 @@ class PDexFlowModel(nn.Module):
                 f"trans_t={tuple(trans_t.shape)}, rot_t={tuple(rot_t.shape)}, ang_t={tuple(ang_t.shape)}, res_mask={tuple(res_mask.shape)}"
             )
 
-        # transformer
+        # Chiral gate G(c) = c * sigmoid(gamma): sigmoid(gamma) lives inside ChiralBridgeLoRA, c is supplied here.
+        # The gate scope wraps *every* trunk path (the old AFI path forgot it, leaving LoRA permanently off).
+        rot6d_input = rotmat_to_6d(rot_t)
+        key_pad_mask = self._safe_padding_mask(res_mask)
         if self.chi_lora_cfg.enabled:
-            pep_mask = (gen_mask.bool() & res_mask.bool()).unsqueeze(-1)  # (B,L,1)
-            gate = batch.get('chirality', torch.zeros((B,), device=seq_t.device, dtype=torch.long))
-            if isinstance(gate, torch.Tensor) and gate.ndim == 2 and gate.shape[-1] == 1:
-                gate = gate.squeeze(-1)
-            gate = gate.view(B, 1, 1).to(seq_t.device, dtype=x.dtype) * pep_mask.to(x.dtype)
+            gate = chir.view(B, 1, 1).to(device=seq_t.device, dtype=x.dtype)
+            if self.trunk_type == "joint":
+                gate = gate * (gen_mask.bool() & res_mask.bool()).unsqueeze(-1).to(x.dtype)  # legacy: peptide tokens only
         else:
             gate = None
 
-        # Apply transformer layers with optional AFI injection before each layer.
-        # When AFI is enabled, we iterate over layers manually to inject axial
-        # features (computed from trans_t and rot6d) into the hidden state.
-        rot6d_input = rotmat_to_6d(rot_t)
-        h = x
-        key_pad_mask = self._safe_padding_mask(res_mask)
-
-        if self.afi_cfg.enabled and len(self.afi_modules) > 0:
-            for i, layer in enumerate(self.trunk.layers):
-                # Inject axial features before this layer
-                h = self.afi_modules[i](h, trans_t, rot6d_input)
-                # Run the transformer layer
-                h = layer(h, src_key_padding_mask=key_pad_mask)
-        else:
-            with self._chi_lora_gate(gate) if gate is not None else contextlib.nullcontext():
+        use_afi = self.afi_cfg.enabled and len(self.afi_modules) > 0
+        with self._chi_lora_gate(gate) if gate is not None else contextlib.nullcontext():
+            if self.trunk_type == "geometric":
+                hook = (lambda i, h_in: self.afi_modules[i](h_in, trans_t, rot6d_input)) if use_afi else None
+                h = self.trunk(x, trans_t / self.coord_scale, res_mask, gen_mask.bool(), pre_layer_hook=hook)
+            elif use_afi:
+                h = x
+                for i, layer in enumerate(self.trunk.layers):
+                    h = self.afi_modules[i](h, trans_t, rot6d_input)
+                    h = layer(h, src_key_padding_mask=key_pad_mask)
+            else:
                 h = self.trunk(x, src_key_padding_mask=key_pad_mask)
 
         pred_trans_1 = self.out_trans(h)
@@ -703,7 +755,7 @@ class PDexFlowModel(nn.Module):
         if self.esm_conditioner is not None and batch.get('esm_cond', None) is None:
             res_mask_for_esm = batch['res_mask'].bool()
             with torch.no_grad():
-                esm_cond_raw, _ = self.esm_conditioner(seq_t, res_mask_for_esm)
+                esm_cond_raw, _ = self.esm_conditioner(self._esm_tokens(seq_t, batch['generate_mask']), res_mask_for_esm)
             batch['esm_cond'] = esm_cond_raw
 
         out = self.predict_x1(batch, t, seq_t, trans_t, rot_t, ang_t)

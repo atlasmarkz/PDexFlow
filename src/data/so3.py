@@ -173,7 +173,7 @@ def log_map(R: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     """Logarithm map on SO(3): rotation matrix -> axis-angle vector.
 
     Uses the numerically stable atan2-based formula for θ:
-        θ = 2 * atan2(||skew||, (trace-1)/2)
+        θ = atan2(||skew||, (trace-1)/2)
     which has finite gradients everywhere, unlike acos((trace-1)/2).
 
     Three branches for the axis extraction:
@@ -187,9 +187,10 @@ def log_map(R: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     skew_norm = torch.linalg.norm(omega, dim=-1)  # ||ω|| = sin(θ)
 
     # atan2-based θ computation: finite gradients everywhere.
-    # θ = 2 * atan2(||skew||, (trace-1)/2)
+    # ||skew|| = sin(θ) and (trace-1)/2 = cos(θ), hence θ = atan2(||skew||, (trace-1)/2).
+    # (An earlier version multiplied by 2, which doubled every rotation velocity / geodesic distance.)
     half_trace_minus_1 = (trace - 1.0) * 0.5
-    theta = 2.0 * torch.atan2(skew_norm, half_trace_minus_1.clamp(min=-1.0, max=1.0))
+    theta = torch.atan2(skew_norm, half_trace_minus_1.clamp(min=-1.0, max=1.0))
 
     # Standard branch: axis = ω / ||ω||, result = axis * θ = ω * θ / ||ω||
     # For small θ, ||ω|| ≈ θ, so θ / ||ω|| ≈ 1.
@@ -227,7 +228,7 @@ def log_map(R: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     near_pi_blend = torch.sigmoid((theta - (math.pi - 1e-2)) * 1e3)[..., None]
     regular_blend = (1.0 - small_blend) * (1.0 - near_pi_blend)
 
-    omega_small = omega * 0.5 * theta[..., None]
+    omega_small = omega  # for θ -> 0, vee(skew) = sin(θ) n ≈ θ n
     return small_blend * omega_small + regular_blend * omega_std + near_pi_blend * omega_pi
 
 
