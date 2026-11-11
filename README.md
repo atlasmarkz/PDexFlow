@@ -58,7 +58,6 @@ pdexflow-eval sample.ckpt_path=/path/to/backbone.pt eval.dataset_x_mirror=true
 
 ```bash
 pytest test
-python scripts/smoke_cpu.py     # minimal training/sampling smoke test
 ```
 
 > Caches built before the parity convention was corrected (the mirrored `*_x_cache.lmdb` files) must be rebuilt once:

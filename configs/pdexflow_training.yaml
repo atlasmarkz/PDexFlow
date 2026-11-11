@@ -10,7 +10,7 @@ defaults:
 data:
   structure_dir: data/pepmerge       # one sub-directory per complex with peptide.pdb + pocket.pdb
   cache_dir: .cache/pepmerge         # LMDB caches are built here on first run
-  split: train                       # train | test | all (test ids are listed in src/names.txt)
+  split: train                       # train | test | all (test ids: src/data/test_ids.txt)
   reset_cache: false                 # set true once after changing the parity convention
 
 train:

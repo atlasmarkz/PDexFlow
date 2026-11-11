@@ -7,6 +7,7 @@ import torch
 from tqdm.auto import tqdm
 from typing import Dict
 
+from src.data.splits import filter_ids
 from src.data.parsers import parse_pdb, pepmerge_paths
 from src.data.pep_constants import BBHeavyAtom
 from src.data.torsion import get_torsion_angle
@@ -107,14 +108,9 @@ class PepMergeDataset(PepDataset):
                 self._preprocess_structures(sample_dirs)
 
     def _filter_split(self, sample_dirs):
-        """Honour the split encoded in the dataset name (train / test / all); test ids live in src/names.txt."""
-        if 'train' not in self.name and 'test' not in self.name:
-            return sample_dirs
-        names_path = os.path.join(os.path.dirname(__file__), '..', 'names.txt')
-        with open(names_path, 'r') as f:
-            test_ids = {line.strip() for line in f if line.strip()}
-        is_test = 'test' in self.name
-        return [d for d in sample_dirs if (os.path.basename(d) in test_ids) == is_test]
+        """Honour the split encoded in the dataset name; names without a split keyword keep every complex."""
+        keep = set(filter_ids(self.name, [os.path.basename(d) for d in sample_dirs], strict=False))
+        return [d for d in sample_dirs if os.path.basename(d) in keep]
 
     def _preprocess_structures(self, dir_list):
         tasks = []

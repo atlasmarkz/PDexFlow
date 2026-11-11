@@ -3,6 +3,7 @@ import math
 
 import torch
 
+from helpers import synthesize_batch
 from src.analysis.utils import chirality_sign
 from src.data import so3
 from src.data.pep_constants import AA, BBHeavyAtom
@@ -10,23 +11,9 @@ from src.models.model import PDexFlowModel
 
 
 def _batch(B=2, L=8, n_pep=5, seed=0):
-    g = torch.Generator().manual_seed(seed)
-    ca = torch.arange(L, dtype=torch.float32)[None, :, None] * torch.tensor([3.8, 0.0, 0.0]) + 0.3 * torch.randn(B, L, 3, generator=g)
-    pos = torch.zeros(B, L, 15, 3)
-    pos[:, :, BBHeavyAtom.N] = ca + torch.tensor([-1.0, 1.2, 0.2])
-    pos[:, :, BBHeavyAtom.CA] = ca
-    pos[:, :, BBHeavyAtom.C] = ca + torch.tensor([0.8, -0.9, 1.1])
-    gen = torch.zeros(B, L, dtype=torch.bool)
-    gen[:, :n_pep] = True
-    return {
-        "aa": torch.randint(0, 20, (B, L), generator=g),
-        "pos_heavyatom": pos,
-        "torsion_angle": torch.rand(B, L, 5, generator=g) * 2 * math.pi,
-        "res_mask": torch.ones(B, L, dtype=torch.bool),
-        "generate_mask": gen,
-        "res_nb": torch.arange(L)[None].repeat(B, 1),
-        "chirality": torch.tensor([0, 1][:B]),
-    }
+    batch = synthesize_batch(B=B, L=L, n_peptide=n_pep, seed=seed)
+    batch["chirality"] = torch.tensor([0, 1][:B])  # one L and one D sample
+    return batch
 
 
 def _model(**kw):

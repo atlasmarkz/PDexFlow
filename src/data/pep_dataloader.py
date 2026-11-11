@@ -12,6 +12,7 @@ from torch.utils.data import Dataset
 from torch.utils.data._utils.collate import default_collate
 from tqdm.auto import tqdm
 
+from src.data.splits import filter_ids
 from src.data.parsers import parse_pdb
 from src.data.pep_constants import BBHeavyAtom, PAD_RESIDUE_INDEX
 from src.data.torsion import get_torsion_angle
@@ -182,20 +183,7 @@ class PepDataset(Dataset):
             self._close_db()
 
         if not os.path.exists(self._cache_db_path):
-            all_pdbs = os.listdir(self.structure_dir)
-            names_ = []
-            names_path = os.path.join(os.path.dirname(__file__), '..', 'names.txt')
-            with open(names_path, 'r') as f:  # testset
-                for line in f:
-                    names_.append(line.strip())
-            if 'train' in self.name:
-                all_pdbs = [pdb_fname for pdb_fname in all_pdbs if pdb_fname not in names_]
-            elif 'test' in self.name:
-                all_pdbs = [pdb_fname for pdb_fname in all_pdbs if pdb_fname in names_]
-            elif 'all' in self.name:
-                all_pdbs = all_pdbs
-            else:
-                raise ValueError('Data split can also accept: train/test/all.')
+            all_pdbs = filter_ids(self.name, os.listdir(self.structure_dir))
 
             todo_pdbs = all_pdbs
 

@@ -1,21 +1,15 @@
 """Checks that the implementation follows the paper: Mini-ROT (Eq. 13), parity-consistent flow targets and
 symmetry loss (Eq. 5), Chiral-Bridge gating (Eq. 7-8) and the receptor cross-attention trunk (Sec. IV-C)."""
-import importlib.util
 import math
-import os
 
 import pytest
 import torch
 
+from helpers import synthesize_batch
 from src import flow as ph_flow
 from src.data import minibatch_ot, so3, torus
 from src.data.parity import apply_parity_state, parity_rotvec, parity_torsion_velocity
 from src.models.model import PDexFlowModel
-
-_spec = importlib.util.spec_from_file_location("smoke_cpu", os.path.join(os.path.dirname(__file__), "..", "scripts", "smoke_cpu.py"))
-_smoke = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_smoke)
-synthesize_batch = _smoke.synthesize_batch
 
 
 def _tiny(**kw):

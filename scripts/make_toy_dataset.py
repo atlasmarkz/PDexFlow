@@ -15,6 +15,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data import so3  # noqa: E402
+from src.data.splits import test_ids  # noqa: E402
 from src.data.torsion import full_atom_reconstruction, get_heavyatom_mask  # noqa: E402
 from src.data.writers import save_pdb  # noqa: E402
 
@@ -64,8 +65,7 @@ def main():
     ap.add_argument("--n_test", type=int, default=2)
     args = ap.parse_args()
 
-    names_txt = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src", "names.txt")
-    test_names = [l.strip() for l in open(names_txt) if l.strip()][: args.n_test]  # ids reserved for the test split
+    test_names = sorted(test_ids())[: args.n_test]  # ids reserved for the test split
     for i in range(args.n_train):
         make_complex(os.path.join(args.out, f"toy_train_{i:03d}"), seed=i)
     for j, name in enumerate(test_names):
